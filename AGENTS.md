@@ -66,7 +66,7 @@ w = warning
 e = error
 ```
 
-If new HubSpot fields are encountered, preserve them under `x` and warn. If a property is missing a usable `name`, do not index that property and emit an error.
+If new HubSpot fields are encountered, preserve them under `x` and warn. If known source fields are not modelled as dedicated metadata, row columns, dictionaries, flags, hints, or sidecar content, preserve them under `x` without warning unless they are also unknown. If a property is missing a usable `name`, do not index that property and emit an error.
 
 ## Prompt loading order for downstream agents
 

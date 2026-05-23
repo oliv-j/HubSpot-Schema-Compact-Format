@@ -659,7 +659,7 @@ Example view refs:
 
 The encoder must not silently discard unknown fields.
 
-Unknown or non-core fields must be preserved in `x` or produce an error.
+Unknown or non-core fields must be preserved in `x` or produce an error. Known HubSpot fields that are deliberately not modelled as dedicated HSCF fields are still non-core for encoding purposes and must be preserved in `x`.
 
 Recommended structure:
 
@@ -800,7 +800,7 @@ For each property:
 3. Encode property booleans into `f`.
 4. Encode `modificationMetadata` into `mm`.
 5. Move large enum options into sidecars.
-6. Store unmodelled fields in `x.propertyExtras[propertyName]`.
+6. Store unmodelled fields in the property row `x` cell or in an equivalent `x.propertyExtras[propertyName]` structure.
 7. Apply trailing-null omission.
 
 ### 22.4 Encode enum options
@@ -818,7 +818,7 @@ If associations exist:
 
 1. Encode directional rows according to `ak`.
 2. Preserve user-enforced max flags.
-3. Preserve unknown association fields in `x.associationExtras`.
+3. Preserve unknown and known-but-unmodelled association fields in the association row `x` cell or in an equivalent `x.associationExtras` structure.
 4. Do not deduplicate away directional rows in the full profile.
 
 ### 22.6 Build indexes

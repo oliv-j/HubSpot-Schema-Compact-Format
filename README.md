@@ -1,32 +1,8 @@
 # HSCF: HubSpot schema compact format
 
-HSCF stands for **HubSpot schema compact format**. It is a deterministic JSON-based format for representing HubSpot object schemas in a way that reduces token usage when agents need to read, validate, or reason about those schemas, while still preserving the important source detail.
+HSCF stands for **HubSpot schema compact format**. It is a deterministic JSON-based format for representing HubSpot object schemas in a way that supports low-token agent retrieval while preserving source schema detail.
 
-The practical target is simple: agents should almost never load the full HubSpot schema export into context. They should load a thin HSCF view file, use the property index to find relevant rows, open only those rows, and open enum sidecars only when enum validation is needed. The point is to keep prompts small and retrieval sparse so schema-heavy tasks stay cheaper and more reliable.
-
-## What this repo is for
-
-This repository is intended to be **public reference material** for humans and agents.
-
-Its primary purpose is:
-
-1. Define the HSCF format.
-2. Provide a small reference encoder.
-3. Give implementation agents enough documentation and examples to add HSCF support inside a different repository that already contains HubSpot schema exports.
-
-This repository is **not** trying to be a complete repo-scanning product that automatically discovers schema files across arbitrary repositories. Instead, it gives downstream agents:
-
-1. The format specification.
-2. A reference Python implementation of the encoder.
-3. Example control-surface conventions such as `config/hscf.yml`.
-4. Prompting guidance in `AGENTS.md` for implementing HSCF elsewhere.
-
-When an agent is told to use this repo in another codebase, the expected workflow is:
-
-1. Read the spec and implementation notes here.
-2. Inspect the target repository for its actual schema layout.
-3. Add the appropriate control surface in that target repository.
-4. Wire the reference encoder or equivalent logic into that target repository's scripts, tests, and generation flow.
+The practical target is simple: agents should almost never load the full HubSpot schema export. They should load a thin HSCF view file, use the property index to find relevant rows, open only those rows, and open enum sidecars only when enum validation is needed.
 
 ## Repository contents
 
@@ -80,7 +56,7 @@ python -m pip install -e .
 python -m hscf.cli encode examples/raw/synthetic_contact_schema.json -o examples/output --object-key synthetic_contact
 ```
 
-This writes a full pack, view pack, property part file, and any enum sidecars.
+This writes a full pack, view pack, property part file, and any enum sidecars. Full packs embed property rows, so `python -m hscf.cli property <object>.hsp.json <property>` also works if the sibling `parts/` file is not present.
 
 ## Expected agent workflow
 
@@ -100,11 +76,9 @@ Give an implementation agent this repository and ask it to implement HSCF agains
 3. Add or update a control surface such as `config/hscf.yml`.
 4. Generate `.hsp.json`, `.hsp-view.json`, property part files, and enum sidecars for latest schemas.
 5. Offer to encode historical versions where present.
-6. Report warnings; do not silently discard unknown schema data.
+6. Report warnings; do not silently discard unknown schema data. Preserve known-but-unmodelled source fields in `x` as well.
 
 See `AGENTS.md` and `docs/agent-quickstart.md`.
-
-The discovery of latest schemas, historical versions, and repo-specific generation commands happens in the **target repository being modified**, not in this public reference repository.
 
 ## Public repo caution
 

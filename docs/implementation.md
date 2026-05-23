@@ -141,7 +141,7 @@ Use compact warning tuples.
 
 ## Preservation
 
-Unknown top-level, property, option, and association fields must be preserved under `x` where practical. Unknown data should not be discarded silently.
+Unknown fields and known-but-unmodelled source fields must be preserved under `x` where practical. Unknown data should not be discarded silently. For example, if `displayOrder`, property `createdAt`, property `updatedAt`, property `createdUserId`, or association timestamps are not modelled as dedicated columns, preserve them in the relevant row `x` cell.
 
 ## Hashing
 

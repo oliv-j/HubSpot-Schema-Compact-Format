@@ -1,9 +1,13 @@
+import contextlib
+import copy
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from hscf.encode import encode, expand_property_row, load_json, write_encoded
+from hscf.cli import main as cli_main
+from hscf.encode import encode, expand_property_row, load_json, write_encoded, write_json
 
 FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "raw" / "synthetic_contact_schema.json"
 
@@ -46,6 +50,65 @@ class EncoderTests(unittest.TestCase):
         idx = result.full["idx"]["prop"]["example_region"]
         expanded = expand_property_row(result.full, idx)
         self.assertIn("futureHubSpotKey", expanded["x"])
+
+    def test_known_unmodelled_property_fields_are_preserved(self):
+        raw = copy.deepcopy(load_json(FIXTURE))
+        prop = raw["result"]["properties"][0]
+        prop["createdAt"] = "2026-01-01T00:00:00Z"
+        prop["updatedAt"] = "2026-01-02T00:00:00Z"
+        prop["createdUserId"] = "12345"
+        prop["displayOrder"] = 99
+
+        result = encode(raw, object_key="synthetic_contact")
+        idx = result.full["idx"]["prop"]["email"]
+        expanded = expand_property_row(result.full, idx)
+
+        self.assertEqual(expanded["x"]["createdAt"], "2026-01-01T00:00:00Z")
+        self.assertEqual(expanded["x"]["updatedAt"], "2026-01-02T00:00:00Z")
+        self.assertEqual(expanded["x"]["createdUserId"], "12345")
+        self.assertEqual(expanded["x"]["displayOrder"], 99)
+
+    def test_known_top_level_user_fields_are_preserved_in_metadata(self):
+        raw = copy.deepcopy(load_json(FIXTURE))
+        raw["result"]["createdByUserId"] = "111"
+        raw["result"]["updatedByUserId"] = "222"
+
+        result = encode(raw, object_key="synthetic_contact")
+
+        self.assertEqual(result.full["m"]["createdByUserId"], "111")
+        self.assertEqual(result.full["m"]["updatedByUserId"], "222")
+
+    def test_known_unmodelled_association_fields_are_preserved(self):
+        raw = copy.deepcopy(load_json(FIXTURE))
+        assoc = raw["result"]["associations"][0]
+        assoc["createdAt"] = "2026-01-03T00:00:00Z"
+        assoc["updatedAt"] = "2026-01-04T00:00:00Z"
+
+        result = encode(raw, object_key="synthetic_contact")
+        ak = result.full["ak"]
+        assoc_row = list(result.full["a"][0])
+        assoc_row.extend([None] * (len(ak) - len(assoc_row)))
+        expanded = dict(zip(ak, assoc_row))
+
+        self.assertEqual(expanded["x"]["createdAt"], "2026-01-03T00:00:00Z")
+        self.assertEqual(expanded["x"]["updatedAt"], "2026-01-04T00:00:00Z")
+
+    def test_property_cli_falls_back_to_embedded_rows_for_standalone_full_pack(self):
+        raw = load_json(FIXTURE)
+        result = encode(raw, object_key="synthetic_contact")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            full_path = Path(tmp) / "synthetic_contact.hsp.json"
+            write_json(full_path, result.full)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = cli_main(["property", str(full_path), "email"])
+
+            self.assertEqual(exit_code, 0)
+            expanded = json.loads(stdout.getvalue())
+            self.assertEqual(expanded["n"], "email")
+            self.assertEqual(expanded["t"], "string")
 
     def test_rows_do_not_exceed_property_key_length(self):
         raw = load_json(FIXTURE)

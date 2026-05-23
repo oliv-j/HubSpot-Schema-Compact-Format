@@ -34,7 +34,14 @@ def cmd_property(args: argparse.Namespace) -> int:
     props_ref = pack.get("refs", {}).get("props")
     if props_ref:
         props_path = Path(args.pack).parent / props_ref
-        props = load_json(props_path)
+        if props_path.exists():
+            props = load_json(props_path)
+        elif "p" in pack:
+            # Full packs embed property rows, so they remain inspectable even
+            # when copied without their sibling parts directory.
+            props = pack
+        else:
+            raise SystemExit(f"Property rows file not found: {props_path}")
     else:
         props = pack
     expanded = expand_property_row(props, idx[args.name])

@@ -101,6 +101,46 @@ KNOWN_ASSOCIATION_KEYS = {
     "updatedAt",
 }
 
+# Keys modelled directly in the compact property row. Known source keys that are
+# not listed here must still be preserved in the row's x cell.
+ENCODED_PROPERTY_KEYS = {
+    "name",
+    "label",
+    "type",
+    "fieldType",
+    "description",
+    "groupName",
+    "options",
+    "calculated",
+    "externalOptions",
+    "archived",
+    "hasUniqueValue",
+    "hidden",
+    "hubspotDefined",
+    "modificationMetadata",
+    "formField",
+    "dataSensitivity",
+    "showCurrencySymbol",
+    "numberDisplayHint",
+    "dateDisplayHint",
+    "referencedObjectType",
+}
+
+# Keys modelled directly in the compact association row. Known source keys that
+# are not listed here must still be preserved in the row's x cell.
+ENCODED_ASSOCIATION_KEYS = {
+    "fromObjectTypeId",
+    "toObjectTypeId",
+    "name",
+    "cardinality",
+    "inverseCardinality",
+    "hasUserEnforcedMaxToObjectIds",
+    "hasUserEnforcedMaxFromObjectIds",
+    "maxToObjectIds",
+    "maxFromObjectIds",
+    "id",
+}
+
 
 @dataclass
 class EncodeResult:
@@ -247,6 +287,8 @@ def build_metadata(schema: dict[str, Any]) -> dict[str, Any]:
         "restorable": schema.get("restorable"),
         "createdAt": schema.get("createdAt"),
         "updatedAt": schema.get("updatedAt"),
+        "createdByUserId": schema.get("createdByUserId"),
+        "updatedByUserId": schema.get("updatedByUserId"),
     }
 
 
@@ -257,9 +299,10 @@ def encode_associations(schema: dict[str, Any], warnings: list[list[str]]) -> li
         if not isinstance(assoc, dict):
             warnings.append(["e", "INVALID_ASSOCIATION_SHAPE", f"$.associations[{i}]", "Association is not an object"])
             continue
-        assoc_x = extras(assoc, KNOWN_ASSOCIATION_KEYS)
-        if assoc_x:
+        unknown_assoc_x = extras(assoc, KNOWN_ASSOCIATION_KEYS)
+        if unknown_assoc_x:
             warnings.append(["w", "UNKNOWN_ASSOCIATION_KEY", f"$.associations[{i}]", "Preserved in association x"])
+        assoc_x = extras(assoc, ENCODED_ASSOCIATION_KEYS)
         row = [
             assoc.get("fromObjectTypeId"),
             assoc.get("toObjectTypeId"),
@@ -305,9 +348,10 @@ def encode(raw: Any, *, object_key: str | None = None, option_count_threshold: i
             warnings.append(["e", "PROPERTY_MISSING_NAME", path, "Property not indexed"])
             continue
 
-        prop_x = extras(prop, KNOWN_PROPERTY_KEYS)
-        if prop_x:
+        unknown_prop_x = extras(prop, KNOWN_PROPERTY_KEYS)
+        if unknown_prop_x:
             warnings.append(["w", "UNKNOWN_PROPERTY_KEY", path, "Preserved in property x"])
+        prop_x = extras(prop, ENCODED_PROPERTY_KEYS)
 
         options = prop.get("options") or []
         enum_ref = None
