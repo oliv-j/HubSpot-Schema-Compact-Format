@@ -1,8 +1,21 @@
 # HSCF: HubSpot schema compact format
 
-HSCF stands for **HubSpot schema compact format**. It is a deterministic JSON-based format for representing HubSpot object schemas in a way that supports low-token agent retrieval while preserving source schema detail.
+HSCF stands for **HubSpot schema compact format**. It is a deterministic JSON-based format for representing HubSpot object schemas in a way that reduces token usage and prompt size when agents work with those schemas, while preserving source schema detail.
 
 The practical target is simple: agents should almost never load the full HubSpot schema export. They should load a thin HSCF view file, use the property index to find relevant rows, open only those rows, and open enum sidecars only when enum validation is needed.
+
+## What this repo is for
+
+This repository is public reference material for humans and agents.
+
+Use it when an agent is asked to implement HSCF in a different repository that already contains HubSpot schema exports. The agent should read this repo for:
+
+1. The HSCF format and retrieval model.
+2. A small reference encoder.
+3. Example control-surface conventions such as `config/hscf.yml`.
+4. Implementation instructions in `AGENTS.md`.
+
+This repository is not meant to auto-discover and encode schemas across arbitrary repos by itself. The repo-specific discovery, wiring, and generation workflow belong in the target repository being modified.
 
 ## Repository contents
 
