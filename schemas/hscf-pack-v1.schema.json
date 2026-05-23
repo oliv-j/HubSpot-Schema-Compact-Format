@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/hscf/schemas/hscf-pack-v1.schema.json",
+  "title": "HSCF v1 pack",
+  "type": "object",
+  "required": ["v", "kind", "profile", "m", "pk", "idx", "raw"],
+  "properties": {
+    "v": {"const": "hscf-1"},
+    "kind": {"const": "hubspot_schema_pack"},
+    "profile": {"enum": ["full", "view"]},
+    "m": {"type": "object"},
+    "d": {"type": "object"},
+    "pk": {"type": "array", "items": {"type": "string"}},
+    "p": {"type": "array", "items": {"type": "array"}},
+    "ek": {"type": "array", "items": {"type": "string"}},
+    "e": {"type": "object"},
+    "ak": {"type": "array", "items": {"type": "string"}},
+    "a": {"type": "array", "items": {"type": "array"}},
+    "idx": {
+      "type": "object",
+      "required": ["prop"],
+      "properties": {
+        "prop": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        }
+      },
+      "additionalProperties": true
+    },
+    "refs": {"type": "object"},
+    "x": {"type": "object"},
+    "wk": {"type": "array", "items": {"type": "string"}},
+    "w": {"type": "array", "items": {"type": "array"}},
+    "raw": {
+      "type": "object",
+      "required": ["sourceHash"],
+      "properties": {
+        "sourceHash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "encodedAt": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"profile": {"const": "full"}}},
+      "then": {
+        "required": ["d", "p", "ek", "e", "ak", "a", "refs", "x", "wk", "w"]
+      }
+    },
+    {
+      "if": {"properties": {"profile": {"const": "view"}}},
+      "then": {
+        "required": ["refs"]
+      }
+    }
+  ],
+  "additionalProperties": false
+}

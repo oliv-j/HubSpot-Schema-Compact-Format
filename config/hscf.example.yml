@@ -1,0 +1,22 @@
+# Example control surface for repositories that generate HSCF files.
+# Copy to config/hscf.yml and edit paths.
+
+version: 1
+sidecar_threshold:
+  option_count: 25
+  bytes: 4096
+
+schemas:
+  - object_key: contacts
+    input: schemas/latest/contacts.json
+    output_dir: schema-packs/contacts
+    include_view: true
+    include_property_part: true
+    historical_glob: schemas/history/contacts/*.json
+
+  - object_key: delegates
+    input: schemas/latest/delegates.json
+    output_dir: schema-packs/delegates
+    include_view: true
+    include_property_part: true
+    historical_glob: schemas/history/delegates/*.json

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hscf"
+version = "0.1.0"
+description = "Reference encoder for HubSpot schema compact format"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "License not selected"}
+authors = [{name = "HSCF contributors"}]
+
+[project.scripts]
+hscf = "hscf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hscf*"]
