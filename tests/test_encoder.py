@@ -23,6 +23,10 @@ class EncoderTests(unittest.TestCase):
         self.assertEqual(set(result.view["idx"].keys()), {"prop"})
         self.assertIn("example_region", result.full["e"])
         self.assertIn("ref", result.full["e"]["example_region"])
+        self.assertEqual(
+            result.full["e"]["example_region"]["ref"],
+            "options/synthetic_contact.example_region.hsp-options.json",
+        )
         self.assertTrue(result.option_sidecars)
 
     def test_write_and_expand_property(self):
@@ -109,6 +113,52 @@ class EncoderTests(unittest.TestCase):
             expanded = json.loads(stdout.getvalue())
             self.assertEqual(expanded["n"], "email")
             self.assertEqual(expanded["t"], "string")
+
+    def test_enum_sidecar_refs_do_not_collide_after_safe_key_normalization(self):
+        raw = {
+            "name": "colliding_object",
+            "properties": [
+                {
+                    "name": "foo bar",
+                    "label": "Foo Bar",
+                    "type": "enumeration",
+                    "fieldType": "select",
+                    "options": [{"label": "Alpha", "value": "alpha"}],
+                },
+                {
+                    "name": "foo/bar",
+                    "label": "Foo Slash Bar",
+                    "type": "enumeration",
+                    "fieldType": "select",
+                    "options": [{"label": "Beta", "value": "beta"}],
+                },
+            ],
+        }
+
+        result = encode(raw, object_key="colliding_object", option_count_threshold=0)
+
+        self.assertEqual(result.full["p"][0][7], "foo bar")
+        self.assertEqual(result.full["p"][1][7], "foo/bar")
+        self.assertIn("foo bar", result.full["e"])
+        self.assertIn("foo/bar", result.full["e"])
+        self.assertEqual(
+            result.full["e"]["foo bar"]["ref"],
+            "options/colliding_object.foo_bar.hsp-options.json",
+        )
+        self.assertEqual(
+            result.full["e"]["foo/bar"]["ref"],
+            "options/colliding_object.foo_bar__foo%2Fbar.hsp-options.json",
+        )
+        self.assertIn("options/colliding_object.foo_bar.hsp-options.json", result.option_sidecars)
+        self.assertIn("options/colliding_object.foo_bar__foo%2Fbar.hsp-options.json", result.option_sidecars)
+        self.assertEqual(
+            result.option_sidecars["options/colliding_object.foo_bar.hsp-options.json"]["property"],
+            "foo bar",
+        )
+        self.assertEqual(
+            result.option_sidecars["options/colliding_object.foo_bar__foo%2Fbar.hsp-options.json"]["property"],
+            "foo/bar",
+        )
 
     def test_rows_do_not_exceed_property_key_length(self):
         raw = load_json(FIXTURE)

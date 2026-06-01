@@ -139,7 +139,7 @@ Use when the view should avoid embedding all property rows.
 Recommended by default above the enum sidecar threshold.
 
 ```text
-options/<object-name>/<property-name>.hsp-options.json
+options/<object-name>/<property-key>.hsp-options.json
 ```
 
 Use when an enum option set is large or only needed for validation.
@@ -470,6 +470,8 @@ Enum option sets are stored in `e` or in enum sidecars.
 
 A property row points to an enum option set using `eo`.
 
+`eo` is a pack-level enum reference key, not a filename. Encoders may keep the original property name in `eo` for readability and token efficiency, while generating a separate file-safe sidecar path when needed.
+
 Example property row:
 
 ```json
@@ -527,6 +529,8 @@ Example sidecar reference:
   }
 }
 ```
+
+If multiple property names would normalize to the same file-safe token, the encoder must disambiguate the sidecar filename deterministically rather than overwriting an existing enum sidecar.
 
 ### 14.3 Enum sidecar shape
 

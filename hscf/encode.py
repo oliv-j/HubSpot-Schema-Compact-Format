@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 HSCF_VERSION = "hscf-1"
 KIND_PACK = "hubspot_schema_pack"
@@ -166,6 +167,29 @@ def safe_key(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
     cleaned = cleaned.strip("._-")
     return cleaned or "schema"
+
+
+def sidecar_property_key(value: str) -> str:
+    encoded = quote(value, safe="")
+    return encoded or "schema"
+
+
+def allocate_option_sidecar_ref(
+    object_key: str,
+    property_name: str,
+    allocated_refs: dict[str, str],
+) -> str:
+    base_key = safe_key(property_name)
+    candidate = f"options/{object_key}.{base_key}.hsp-options.json"
+    owner = allocated_refs.get(candidate)
+    if owner is None or owner == property_name:
+        allocated_refs[candidate] = property_name
+        return candidate
+
+    escaped_key = sidecar_property_key(property_name)
+    candidate = f"options/{object_key}.{base_key}__{escaped_key}.hsp-options.json"
+    allocated_refs[candidate] = property_name
+    return candidate
 
 
 def load_json(path: str | Path) -> Any:
@@ -333,6 +357,7 @@ def encode(raw: Any, *, object_key: str | None = None, option_count_threshold: i
     dictionaries: dict[str, list[Any]] = {"t": [], "ft": [], "g": [], "ds": []}
     e: dict[str, Any] = {}
     option_sidecars: dict[str, dict[str, Any]] = {}
+    allocated_option_refs: dict[str, str] = {}
     property_rows: list[list[Any]] = []
     idx_prop: dict[str, int] = {}
 
@@ -356,7 +381,7 @@ def encode(raw: Any, *, object_key: str | None = None, option_count_threshold: i
         options = prop.get("options") or []
         enum_ref = None
         if options:
-            enum_ref = safe_key(str(name))
+            enum_ref = str(name)
             opt_payload = {
                 "v": HSCF_VERSION,
                 "kind": KIND_OPTIONS,
@@ -367,7 +392,7 @@ def encode(raw: Any, *, object_key: str | None = None, option_count_threshold: i
                 "raw": {"sourceHash": sha256_json(options)},
             }
             if should_sidecar(opt_payload, option_count_threshold, option_bytes_threshold):
-                ref = f"options/{obj_key}.{safe_key(str(name))}.hsp-options.json"
+                ref = allocate_option_sidecar_ref(obj_key, str(name), allocated_option_refs)
                 e[enum_ref] = {"ref": ref, "count": len(options), "hash": opt_payload["raw"]["sourceHash"]}
                 option_sidecars[ref] = opt_payload
                 warnings.append(["i", "OPTION_SET_SIDECAR_WRITTEN", f"{path}.options", f"{len(options)} options"])

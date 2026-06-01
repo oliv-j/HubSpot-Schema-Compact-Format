@@ -52,10 +52,10 @@ This repository is not meant to auto-discover and encode schemas across arbitrar
 HSCF produces these files:
 
 ```text
-<object>.hsp.json                       # full profile; canonical compact pack
-<object>.hsp-view.json                  # view profile; thin agent entrypoint
-parts/<object>.hsp-props.json           # property rows for selective retrieval
-options/<object>.<property>.hsp-options.json  # enum sidecars, when needed
+<object>.hsp.json                              # full profile; canonical compact pack
+<object>.hsp-view.json                         # view profile; thin agent entrypoint
+parts/<object>.hsp-props.json                  # property rows for selective retrieval
+options/<object>.<property-key>.hsp-options.json  # enum sidecars, file-safe and deterministic
 ```
 
 ## Fast start
@@ -70,6 +70,8 @@ python -m hscf.cli encode examples/raw/synthetic_contact_schema.json -o examples
 ```
 
 This writes a full pack, view pack, property part file, and any enum sidecars. Full packs embed property rows, so `python -m hscf.cli property <object>.hsp.json <property>` also works if the sibling `parts/` file is not present.
+
+Enum references inside a pack use the original property name in `eo` and `e`. Sidecar filenames are generated separately so they stay file-safe and deterministic even when multiple property names normalize to the same filename-safe token.
 
 ## Expected agent workflow
 
