@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/workflows/hwcf-steps-v1.schema.json",
+  "title": "HWCF step rows v1",
+  "type": "object",
+  "required": ["v", "kind", "profile", "workflow", "d", "sk", "s", "raw"],
+  "properties": {
+    "v": {"const": "hwcf-1"},
+    "kind": {"const": "hwcf_step_rows"},
+    "profile": {"const": "part"},
+    "workflow": {"type": "string"},
+    "d": {
+      "type": "object",
+      "required": ["t"],
+      "properties": {
+        "t": {
+          "type": "array",
+          "items": {"type": ["string", "null"]}
+        }
+      },
+      "additionalProperties": false
+    },
+    "sk": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "s": {
+      "type": "array",
+      "items": {"type": "array"}
+    },
+    "raw": {
+      "type": "object",
+      "required": ["sourceHash"],
+      "properties": {
+        "sourceHash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

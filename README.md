@@ -1,61 +1,92 @@
-# HSCF: HubSpot schema compact format
+# HubSpot compact formats
 
-HSCF stands for **HubSpot schema compact format**. It is a deterministic JSON-based format for representing HubSpot object schemas in a way that reduces token usage and prompt size when agents work with those schemas, while preserving source schema detail.
+This repository is public reference material for **HubSpot compact formats**: low-token, deterministic JSON artefacts that let agents and tools work with HubSpot exports through sparse retrieval instead of loading full raw JSON every time.
 
-The practical target is simple: agents should almost never load the full HubSpot schema export. They should load a thin HSCF view file, use the property index to find relevant rows, open only those rows, and open enum sidecars only when enum validation is needed.
+Today the repo includes two domain tracks:
+
+- **HSCF**: HubSpot schema compact format for object schemas
+- **HWCF**: HubSpot workflow compact format for workflows
+
+The practical goal is the same across both tracks:
+
+1. Load a thin view file first.
+2. Read metadata and indexes.
+3. Retrieve only the rows needed for the current task.
+4. Open full packs only for audit, regeneration, or unknown-field inspection.
 
 ## What this repo is for
 
-This repository is public reference material for humans and agents.
+Use this repository as a **reference pattern plus reference CLI** when an agent or engineer needs to add compact HubSpot retrieval artefacts to another codebase that already contains HubSpot exports.
 
-Use it when an agent is asked to implement HSCF in a different repository that already contains HubSpot schema exports. The agent should read this repo for:
+This repository is not meant to auto-discover and encode arbitrary customer data by itself. The target repository should own:
 
-1. The HSCF format and retrieval model.
-2. A small reference encoder.
-3. Example control-surface conventions such as `config/hscf.yml`.
-4. Implementation instructions in `AGENTS.md`.
+- export discovery
+- latest-vs-historical selection
+- generation commands
+- CI wiring
+- publication decisions
 
-This repository is not meant to auto-discover and encode schemas across arbitrary repos by itself. The repo-specific discovery, wiring, and generation workflow belong in the target repository being modified.
+## Choose your path
+
+| I need... | Start here |
+| --- | --- |
+| Object schema retrieval | [`docs/objects/standard.md`](docs/objects/standard.md) |
+| Workflow retrieval | [`docs/workflows/standard.md`](docs/workflows/standard.md) |
+| A shared adoption model for both | [`docs/compact-format-family.md`](docs/compact-format-family.md) |
+| Agent implementation instructions | [`AGENTS.md`](AGENTS.md) |
 
 ## Repository contents
 
 ```text
 .
 ├── docs/
-│   ├── HSCF_v1_standard.md
-│   ├── implementation.md
-│   └── agent-quickstart.md
-├── hscf/
-│   ├── __init__.py
-│   ├── cli.py
-│   └── encode.py
-├── scripts/
-│   └── encode_schema.py
-├── schemas/
-│   ├── hscf-pack-v1.schema.json
-│   └── hscf-options-v1.schema.json
+│   ├── compact-format-family.md
+│   ├── objects/
+│   └── workflows/
 ├── examples/
-│   ├── raw/
-│   │   └── synthetic_contact_schema.json
-│   └── output/
-├── tests/
-│   └── test_encoder.py
+│   ├── objects/
+│   └── workflows/
+├── hscf/
+│   ├── cli.py
+│   ├── encode.py
+│   └── workflow.py
+├── schemas/
+│   ├── objects/
+│   └── workflows/
 ├── config/
 │   └── hscf.example.yml
-├── AGENTS.md
-├── pyproject.toml
-└── Makefile
+├── tests/
+│   └── test_encoder.py
+└── scripts/
+    └── encode_schema.py
 ```
 
-## Core artefacts
+## Shared design rules
 
-HSCF produces these files:
+- Sparse retrieval by default
+- Deterministic output from deterministic code
+- No silent data loss
+- Unknown fields preserved under `x`
+- Compact warnings emitted under `w`
+- Domain-specific contracts instead of forcing everything into object-schema terms
+
+## Domain artefacts
+
+### Objects: HSCF
 
 ```text
-<object>.hsp.json                              # full profile; canonical compact pack
-<object>.hsp-view.json                         # view profile; thin agent entrypoint
-parts/<object>.hsp-props.json                  # property rows for selective retrieval
-options/<object>.<property-key>.hsp-options.json  # enum sidecars, file-safe and deterministic
+<object>.hsp.json
+<object>.hsp-view.json
+parts/<object>.hsp-props.json
+options/<object>.<property>.hsp-options.json
+```
+
+### Workflows: HWCF
+
+```text
+<workflow>.hwp.json
+<workflow>.hwp-view.json
+parts/<workflow>.hwp-steps.json
 ```
 
 ## Fast start
@@ -65,40 +96,68 @@ From the repository root:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
-python -m hscf.cli encode examples/raw/synthetic_contact_schema.json -o examples/output --object-key synthetic_contact
+python3 -m pip install -e .
+python3 -m hscf.cli objects encode examples/objects/raw/synthetic_contact_schema.json -o examples/objects/output --object-key synthetic_contact
+python3 -m hscf.cli workflows encode examples/workflows/raw/1743507592.workflow.json -o examples/workflows/output --workflow-key 1743507592
 ```
 
-This writes a full pack, view pack, property part file, and any enum sidecars. Full packs embed property rows, so `python -m hscf.cli property <object>.hsp.json <property>` also works if the sibling `parts/` file is not present.
+## CLI surface
 
-Enum references inside a pack use the original property name in `eo` and `e`. Sidecar filenames are generated separately so they stay file-safe and deterministic even when multiple property names normalize to the same filename-safe token.
+```bash
+hscf objects encode ...
+hscf objects property ...
+hscf workflows encode ...
+hscf workflows step ...
+```
 
-## Expected agent workflow
+Legacy top-level `encode` and `property` commands are retained as object-schema aliases for compatibility.
 
-1. Load `<object>.hsp-view.json` first.
-2. Read `m` for object metadata.
-3. Use `idx.prop` to locate relevant properties.
-4. Load selected rows from `refs.props`.
-5. Open enum sidecars only when validating or mapping enum values.
-6. Load the full pack only for audit, migration, unknown-field inspection, or regeneration.
+## Adopting this in another repository
 
-## Implementing HSCF in another repository
+The recommended downstream pattern is:
 
-Give an implementation agent this repository and ask it to implement HSCF against the target repository's HubSpot schema files. The agent should:
+1. Copy the domain-specific retrieval model you need.
+2. Add a shared control surface such as [`config/hscf.example.yml`](config/hscf.example.yml).
+3. Add repo-specific discovery logic for latest and historical exports.
+4. Wire generation commands into that repository.
+5. Publish only reviewed compact artefacts, not raw private exports.
 
-1. Find the latest raw HubSpot object schema exports.
-2. Identify whether historical schema versions exist.
-3. Add or update a control surface such as `config/hscf.yml`.
-4. Generate `.hsp.json`, `.hsp-view.json`, property part files, and enum sidecars for latest schemas.
-5. Offer to encode historical versions where present.
-6. Report warnings; do not silently discard unknown schema data. Preserve known-but-unmodelled source fields in `x` as well.
-
-See `AGENTS.md` and `docs/agent-quickstart.md`.
+For mixed repos, keep both optimisations in one control surface with separate top-level sections such as `objects:` and `workflows:`.
 
 ## Public repo caution
 
-Do not commit private HubSpot sandbox schema exports, credentials, portal IDs that should not be public, sensitive property descriptions, or internal-only object metadata unless they have been reviewed for publication. This scaffold includes only synthetic fixture data.
+Do not commit private HubSpot exports, secrets, API keys, internal-only descriptions, or sensitive portal metadata unless they have been reviewed for publication. This repository includes reviewed reference fixture data only.
 
-## Specification
+## HubSpot Agent CLI
 
-The formal v1 draft is in `docs/HSCF_v1_standard.md`.
+This repo uses two wrapper commands for HubSpot Agent CLI access:
+
+- `hubspot-sb` for sandbox
+- `hubspot-prod` for production
+
+Do not use bare `hubspot` for normal repo workflows.
+
+Before running HubSpot commands, always verify identity:
+
+```bash
+hubspot-sb whoami
+hubspot-prod whoami
+```
+
+Default to sandbox unless a task explicitly requires production. Current operating mode is read-only unless the user explicitly asks to change that.
+
+Local wrapper locations:
+
+- `~/.local/bin/hubspot-sb`
+- `~/.local/bin/hubspot-prod`
+
+Underlying binary:
+
+- `/Users/oliver.jobson/.hubspot/bin/hubspot`
+
+Auth is isolated by `HOME`:
+
+- sandbox: `~/.hubspot-agent/sandbox`
+- production: `~/.hubspot-agent/prod`
+
+HubSpot task guidance is also available under `.agents/skills/`. Read the relevant `SKILL.md` before performing HubSpot Agent CLI tasks. In this workspace, that bundle is installed at `/Users/oliver.jobson/Documents/Codex/2026-06-02/run-this-npx-skills-add-hubspot/.agents/skills`.

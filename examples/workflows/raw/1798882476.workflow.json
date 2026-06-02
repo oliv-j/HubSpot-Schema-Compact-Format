@@ -1,0 +1,926 @@
+{
+  "id": "1798882476",
+  "isEnabled": true,
+  "objectTypeId": "2-52622293",
+  "flowType": "WORKFLOW",
+  "revisionId": "95",
+  "name": "Swoogo: Delegate New/Update > New SFDC Campaign member",
+  "uuid": "Swoogo: Delegate New > New SFDC Campaign member-1798882476",
+  "createdAt": "2026-03-31T17:36:45.021Z",
+  "updatedAt": "2026-04-16T17:05:33.863Z",
+  "startActionId": "9",
+  "nextAvailableActionId": "17",
+  "actions": [
+    {
+      "actionId": "1",
+      "secretNames": [
+        "SF_CONSUMER_KEY_PROD",
+        "SF_JWT_PART_02",
+        "SF_JWT_PART_03",
+        "SF_JWT_PART_01"
+      ],
+      "sourceCode": "/*\n * Authenticates to Salesforce, checks for an existing CampaignMember, creates one when absent, and returns member details or patch guidance for the delegate workflow.\n * Branch before: None unless upstream routing already selected the create or retry-create path for this delegate.\n * Branch after: Route by output state: skipped, found_needs_patch, created, lock_error, or error.\n * Expected inputs: hs_delegate_id, salesforce_campaign_id, registration_status, exactly one of salesforcecontactid or salesforceleadid, optional salesforce_campaign_membership_id, email.\n * Expected outputs: log, http, http_message, other, membership_id, m_id_known, m_id_status, operation, lock_error.\n */\nconst crypto = require('crypto');\nconst https = require('https');\nconst { URL } = require('url');\n\nconst THIS_ACTION = 'new_delegate_record_CCA1';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst ACTION_VARIANT = 'post';\nconst DEFAULT_LOGIN_URL = 'https://login.salesforce.com';\nconst DEFAULT_API_VERSION = 'v62.0';\nconst SF_PROD_CONSUMER_KEY_SECRET = 'SF_CONSUMER_KEY_PROD';\nconst SF_PROD_USERNAME = 'hubspot.integration@nanoporetech.com';\nconst SF_PROD_JWT_PART_NAMES = ['SF_JWT_PART_01', 'SF_JWT_PART_02', 'SF_JWT_PART_03'];\nconst EXPOSED_OUTPUT_FIELDS = ['log', 'http', 'http_message', 'other', 'membership_id', 'm_id_known', 'm_id_status', 'operation', 'lock_error'];\n\nfunction safeStr(value) {\n  return String(value == null ? '' : value).trim();\n}\n\nfunction norm(value) {\n  return safeStr(value).toLowerCase();\n}\n\nfunction desiredStatusFromRegistrationStatus(value) {\n  const normalized = norm(value);\n  if (!normalized) return 'Registered';\n  if (normalized === 'confirmed') return 'Registered';\n  if (normalized === 'attended') return 'Attended';\n  return '';\n}\n\nfunction jsonCompact(obj) {\n  return JSON.stringify(obj == null ? {} : obj);\n}\n\nfunction selectOutputFields(outputs) {\n  return EXPOSED_OUTPUT_FIELDS.reduce((acc, key) => {\n    acc[key] = outputs[key];\n    return acc;\n  }, {});\n}\n\nfunction friendly(value) {\n  const map = {\n    200: 'OK',\n    201: 'Created',\n    204: 'No content',\n    400: 'Bad Request – Your request is wrong',\n    401: 'Unauthorized (credentials)',\n    403: 'Forbidden (scope)',\n    404: 'Not Found',\n    405: 'Method Not Allowed',\n    408: 'Request timeout',\n    409: 'Conflict',\n    422: 'Unprocessable entity',\n    429: 'Too Many Requests',\n    500: 'Internal Server Error',\n    502: 'Bad gateway / processing limit met',\n    503: 'Service temporarily unavailable',\n    504: 'Gateway timeout / processing limit met',\n  };\n  if (typeof value === 'number') return map[value] || `HTTP ${value}`;\n  const text = String(value || '');\n  if (text === 'Timed_out') return 'Timeout';\n  if (text === 'Request_error') return 'Request error';\n  return 'No response';\n}\n\nfunction deriveHttpMessage(httpDict, overrides) {\n  const out = {};\n  Object.entries(httpDict || {}).forEach(([key, value]) => {\n    const asNum = Number(value);\n    out[key] = Number.isFinite(asNum) ? friendly(asNum) : friendly(value);\n  });\n  Object.entries(overrides || {}).forEach(([key, value]) => {\n    if (value !== undefined && value !== null && String(value).trim() !== '') out[key] = String(value);\n  });\n  return out;\n}\n\nfunction envFirst(keys) {\n  const list = Array.isArray(keys) ? keys : [keys];\n  for (const key of list) {\n    const raw = process.env[key];\n    if (raw == null) continue;\n    const value = String(raw).trim();\n    if (value) return value;\n  }\n  return '';\n}\n\nfunction sfdcApiVersion() {\n  const raw = envFirst(['salesforce_api_version', 'SFDC_API_VERSION', 'SALESFORCE_API_VERSION']) || DEFAULT_API_VERSION;\n  const value = raw.replace(/^\\//, '').trim();\n  if (!value) return DEFAULT_API_VERSION;\n  if (/^\\d/.test(value)) return `v${value}`;\n  return value;\n}\n\nfunction base64url(input) {\n  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input), 'utf8');\n  return buf.toString('base64').replace(/=/g, '').replace(/\\+/g, '-').replace(/\\//g, '_');\n}\n\nfunction buildJwt({ iss, sub, aud, expiresInSec, keyObject }) {\n  const now = Math.floor(Date.now() / 1000);\n  const header = { alg: 'RS256', typ: 'JWT' };\n  const payload = { iss, sub, aud, iat: now, exp: now + expiresInSec };\n  const signingInput = `${base64url(jsonCompact(header))}.${base64url(jsonCompact(payload))}`;\n  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), keyObject);\n  return `${signingInput}.${base64url(signature)}`;\n}\n\nfunction validateBase64String(b64) {\n  if (!b64) return { ok: false, reason: 'empty' };\n  if (!/^[A-Za-z0-9+/=]+$/.test(b64)) return { ok: false, reason: 'non_base64_chars' };\n  if (b64.length % 4 !== 0) return { ok: false, reason: 'length_not_multiple_of_4' };\n  return { ok: true };\n}\n\nfunction getPrivateKeyFromSecrets(httpStatuses) {\n  const parts = SF_PROD_JWT_PART_NAMES.map((name) => envFirst(name));\n  if (parts.some((part) => !part)) {\n    httpStatuses.sfdc_key = 'NO_RESP';\n    return {\n      keyObject: null,\n      meta: { key_scheme: 'SF_JWT_PART_prod_3parts', key_parts_expected: SF_PROD_JWT_PART_NAMES.length, key_parts_found: parts.filter(Boolean).length },\n      error: 'Missing private key parts',\n    };\n  }\n  const scheme = 'SF_JWT_PART_prod_3parts';\n\n  const b64 = parts.map((item) => String(item).replace(/\\s+/g, '')).join('');\n  const valid = validateBase64String(b64);\n  if (!valid.ok) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, key_b64_reason: valid.reason },\n      error: `Invalid base64 private key (${valid.reason})`,\n    };\n  }\n\n  let pem = '';\n  try {\n    pem = Buffer.from(b64, 'base64').toString('utf8');\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length },\n      error: `Key decode failed: ${safeStr(err && err.message)}`,\n    };\n  }\n\n  if (!pem.startsWith('-----BEGIN')) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_prefix: pem.slice(0, 20) },\n      error: 'Decoded key is not PEM',\n    };\n  }\n\n  try {\n    const keyObject = crypto.createPrivateKey(pem);\n    const fingerprint = crypto.createHash('sha256').update(pem).digest('hex').slice(0, 12);\n    return {\n      keyObject,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, pem_len: pem.length, key_fp: fingerprint },\n      error: null,\n    };\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_len: pem.length },\n      error: `PEM parse failed: ${safeStr(err && err.message)}`,\n    };\n  }\n}\n\nfunction sfdcErrorSummary(status, data, text) {\n  if (Array.isArray(data)) {\n    return data\n      .filter((item) => item && typeof item === 'object')\n      .map((item) => {\n        const code = safeStr(item.errorCode);\n        const msg = safeStr(item.message);\n        if (code && msg) return `${code}: ${msg}`;\n        return msg;\n      })\n      .filter(Boolean)\n      .join('; ');\n  }\n  if (data && typeof data === 'object') {\n    const err = safeStr(data.error);\n    const desc = safeStr(data.error_description);\n    if (err && desc) return `${err}: ${desc}`;\n    if (safeStr(data.message)) return safeStr(data.message);\n  }\n  return safeStr(text) || `HTTP ${status}`;\n}\n\nasync function httpRequest({ method, url, headers, params, body, timeoutMs }) {\n  const target = new URL(url);\n  Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, String(value)));\n\n  if (typeof fetch === 'function') {\n    const controller = new AbortController();\n    const timer = setTimeout(() => controller.abort(), timeoutMs);\n    try {\n      const resp = await fetch(target.toString(), {\n        method,\n        headers: headers || {},\n        body,\n        signal: controller.signal,\n      });\n      const text = await resp.text();\n      let json = null;\n      try {\n        json = text ? JSON.parse(text) : null;\n      } catch (_err) {\n        json = null;\n      }\n      return { status: resp.status, text, json };\n    } finally {\n      clearTimeout(timer);\n    }\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(target, { method, headers: headers || {}, timeout: timeoutMs }, (res) => {\n      const chunks = [];\n      res.on('data', (chunk) => chunks.push(chunk));\n      res.on('end', () => {\n        const text = Buffer.concat(chunks).toString('utf8');\n        let json = null;\n        try {\n          json = text ? JSON.parse(text) : null;\n        } catch (_err) {\n          json = null;\n        }\n        resolve({ status: res.statusCode || 0, text, json });\n      });\n    });\n    req.on('timeout', () => req.destroy(new Error('timed_out')));\n    req.on('error', reject);\n    if (body) req.write(body);\n    req.end();\n  });\n}\n\nasync function callOnce(name, method, url, options) {\n  try {\n    const payload =\n      options.jsonBody != null ? Buffer.from(JSON.stringify(options.jsonBody), 'utf8') : options.dataBody != null ? Buffer.from(String(options.dataBody), 'utf8') : undefined;\n    const resp = await httpRequest({\n      method,\n      url,\n      headers: options.headers,\n      params: options.params,\n      body: payload,\n      timeoutMs: options.timeoutMs,\n    });\n    options.http[name] = resp.status || 'NO_RESP';\n    return { resp, err: null };\n  } catch (err) {\n    const message = safeStr(err && err.message);\n    options.http[name] = message === 'timed_out' || message.toLowerCase().includes('abort') ? 'Timed_out' : 'Request_error';\n    return { resp: null, err: message === 'timed_out' || message.toLowerCase().includes('abort') ? 'REQUEST -> Timeout' : `REQUEST -> ${message}` };\n  }\n}\n\nfunction sfdcBase(instanceUrl, apiVersion) {\n  return `${String(instanceUrl).replace(/\\/+$/, '')}/services/data/${apiVersion}`;\n}\n\nfunction sfdcHeaders(accessToken) {\n  return {\n    Authorization: `Bearer ${accessToken}`,\n    'Content-Type': 'application/json',\n    Accept: 'application/json',\n  };\n}\n\nasync function sfdcQueryOne({ instanceUrl, apiVersion, accessToken, soql, httpStatuses, name, timeoutMs }) {\n  const url = `${sfdcBase(instanceUrl, apiVersion)}/query`;\n  const { resp, err } = await callOnce(name, 'GET', url, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    params: { q: soql },\n    timeoutMs,\n  });\n  if (err || !resp) return { record: null, err: err || 'No response' };\n  if (resp.status !== 200) return { record: null, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n  const records = (resp.json && resp.json.records) || [];\n  return { record: records.length ? records[0] : null, err: null };\n}\n\nasync function getSalesforceAccessToken(httpStatuses) {\n  const loginUrl =\n    envFirst(['salesforce_login_url', 'SFDC_LOGIN_URL', 'SALESFORCE_LOGIN_URL', 'SF_LOGIN_AUD', 'SF_LOGIN_URL']) || DEFAULT_LOGIN_URL;\n  const aud = String(loginUrl).replace(/\\/+$/, '');\n  const clientId = envFirst(SF_PROD_CONSUMER_KEY_SECRET);\n  const username = SF_PROD_USERNAME;\n\n  if (!clientId) {\n    httpStatuses.sfdc_auth = 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer' }, err: `Missing ${SF_PROD_CONSUMER_KEY_SECRET}` };\n  }\n\n  const { keyObject, meta: keyMeta, error: keyErr } = getPrivateKeyFromSecrets(httpStatuses);\n  if (keyErr || !keyObject) {\n    httpStatuses.sfdc_auth = httpStatuses.sfdc_auth || 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: keyErr || 'Missing private key' };\n  }\n\n  const assertion = buildJwt({ iss: clientId, sub: username, aud, expiresInSec: 180, keyObject });\n  const tokenUrl = `${aud}/services/oauth2/token`;\n  const body = new URLSearchParams({\n    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',\n    assertion,\n  }).toString();\n\n  const { resp, err } = await callOnce('sfdc_auth', 'POST', tokenUrl, {\n    http: httpStatuses,\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },\n    dataBody: body,\n    timeoutMs: 5000,\n  });\n  if (err || !resp) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: err || 'No response' };\n  if (resp.status !== 200) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n\n  const accessToken = safeStr(resp.json && resp.json.access_token);\n  const instanceUrl = safeStr(resp.json && resp.json.instance_url);\n  if (!accessToken || !instanceUrl) {\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: 'Token response missing access_token/instance_url' };\n  }\n  return { instanceUrl, accessToken, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: null };\n}\n\nfunction blankOutputs() {\n  return {\n    membership_id: '',\n    m_id_known: 'no',\n    m_id_status: '',\n    membership_status: '',\n    operation: '',\n    lock_error: 'false',\n    error: '',\n    error_message: '',\n    error_state: '1',\n    http: '{}',\n    http_message: '{}',\n    hs_delegate_id: '',\n    level: 'INFO',\n    log: '{}',\n    other: '{}',\n    salesforce_campaign_id: '',\n    salesforce_campaign_member_status: '',\n    salesforce_campaign_membership_id: '',\n    salesforcecontactid: '',\n    salesforceleadid: '',\n    email: '',\n    workflow_action: THIS_ACTION,\n    workflow_name: WORKFLOW_NAME,\n  };\n}\n\nfunction finalize(outputs, payload) {\n  const httpMessage = payload.httpMessage || deriveHttpMessage(payload.httpStatuses, {});\n  outputs.m_id_known = outputs.membership_id ? 'yes' : 'no';\n  outputs.m_id_status = outputs.salesforce_campaign_member_status || '';\n  outputs.workflow_action = payload.actionName || THIS_ACTION;\n  outputs.workflow_name = payload.workflowName || WORKFLOW_NAME;\n  outputs.level = payload.level;\n  outputs.error_state = String(payload.errorState);\n  outputs.error_message = safeStr(payload.errorMessage || '');\n  outputs.http = jsonCompact(payload.httpStatuses);\n  outputs.http_message = jsonCompact(httpMessage);\n  outputs.other = jsonCompact(payload.otherPayload || {});\n\n  const logPayload = {\n    workflow_action: outputs.workflow_action,\n    level: outputs.level,\n    error_state: outputs.error_state,\n    workflow_name: outputs.workflow_name,\n    hs_delegate_id: outputs.hs_delegate_id,\n    salesforce_campaign_id: outputs.salesforce_campaign_id,\n    salesforce_campaign_membership_id: outputs.salesforce_campaign_membership_id,\n    membership_id: outputs.membership_id,\n    membership_status: outputs.membership_status,\n    salesforce_campaign_member_status: outputs.salesforce_campaign_member_status,\n    salesforcecontactid: outputs.salesforcecontactid,\n    salesforceleadid: outputs.salesforceleadid,\n    email: outputs.email,\n    error: { http: payload.httpStatuses, http_message: httpMessage },\n    operation: outputs.operation || safeStr(payload.otherPayload && payload.otherPayload.operation),\n    action_variant: ACTION_VARIANT,\n  };\n  if (payload.otherPayload && Object.prototype.hasOwnProperty.call(payload.otherPayload, 'lock_error')) {\n    logPayload.lock_error = payload.otherPayload.lock_error;\n  }\n  outputs.log = jsonCompact(logPayload);\n  return { outputFields: selectOutputFields(outputs) };\n}\n\nfunction isLockError(message) {\n  return String(message || '').includes('UNABLE_TO_LOCK_ROW');\n}\n\nasync function core(event) {\n  const inputs = (event && event.inputFields) || {};\n  const hsDelegateId = safeStr(inputs.hs_delegate_id);\n  const campaignId = safeStr(inputs.salesforce_campaign_id);\n  const registrationStatus = norm(inputs.registration_status);\n  const desiredStatus = desiredStatusFromRegistrationStatus(registrationStatus);\n  const membershipIdIn = safeStr(inputs.salesforce_campaign_membership_id);\n  const salesforcecontactid = safeStr(inputs.salesforcecontactid);\n  const salesforceleadid = safeStr(inputs.salesforceleadid);\n  const email = safeStr(inputs.email);\n\n  const outputs = blankOutputs();\n  outputs.hs_delegate_id = hsDelegateId;\n  outputs.salesforce_campaign_id = campaignId;\n  outputs.salesforce_campaign_member_status = desiredStatus;\n  outputs.salesforce_campaign_membership_id = membershipIdIn;\n  outputs.salesforcecontactid = salesforcecontactid;\n  outputs.salesforceleadid = salesforceleadid;\n  outputs.email = email;\n\n  const httpStatuses = {};\n  const otherPayload = {\n    operation: 'failed',\n    action_variant: ACTION_VARIANT,\n    auth_method: '',\n    api_version: sfdcApiVersion(),\n    registration_status: registrationStatus,\n    desired_status: desiredStatus,\n  };\n\n  const finish = (payload) => finalize(outputs, { ...payload, otherPayload });\n\n  if (!hsDelegateId) httpStatuses.input_hs_delegate_id = 'NO_RESP';\n  if (!campaignId) httpStatuses.input_salesforce_campaign_id = 'NO_RESP';\n  if (!desiredStatus) {\n    httpStatuses.input_registration_status = 'INVALID';\n  }\n  if (salesforcecontactid && salesforceleadid) httpStatuses.input_salesforce_ids = 'INVALID';\n  if (!salesforcecontactid && !salesforceleadid) httpStatuses.input_salesforce_ids = 'NO_RESP';\n  if (Object.keys(httpStatuses).length) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        input_registration_status: \"registration_status must be blank, 'confirmed', or 'attended'\",\n        input_salesforce_ids: 'Provide exactly one of salesforcecontactid or salesforceleadid',\n      }),\n      errorMessage: 'Missing or invalid inputs',\n    });\n  }\n\n  const personField = salesforcecontactid ? 'ContactId' : 'LeadId';\n  const personId = salesforcecontactid || salesforceleadid;\n  otherPayload.person_field = personField;\n  otherPayload.person_id = personId;\n\n  const { instanceUrl, accessToken, meta, err: authErr } = await getSalesforceAccessToken(httpStatuses);\n  Object.assign(otherPayload, meta || {});\n  otherPayload.auth_method = (meta && meta.auth_method) || '';\n  if (authErr || !instanceUrl || !accessToken) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_auth: authErr || 'Missing Salesforce auth' }),\n      errorMessage: 'Salesforce authentication failed',\n    });\n  }\n\n  const apiVersion = otherPayload.api_version;\n  const existing = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status, CampaignId, ContactId, LeadId FROM CampaignMember WHERE CampaignId = '${campaignId}' AND ${personField} = '${personId}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_existing',\n    timeoutMs: 4000,\n  });\n  if (existing.err) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_query_existing: existing.err }),\n      errorMessage: 'Unable to query CampaignMember',\n    });\n  }\n\n  if (existing.record) {\n    outputs.membership_id = safeStr(existing.record.Id);\n    outputs.membership_status = safeStr(existing.record.Status);\n    otherPayload.current_status = outputs.membership_status;\n    if (norm(outputs.membership_status) === norm(desiredStatus)) {\n      outputs.operation = 'skipped';\n      otherPayload.operation = 'skipped';\n      return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n    }\n    outputs.operation = 'found_needs_patch';\n    otherPayload.operation = 'found_needs_patch';\n    otherPayload.needs_patch = true;\n    return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n  }\n\n  const createResp = await callOnce('sfdc_create_campaign_member', 'POST', `${sfdcBase(instanceUrl, apiVersion)}/sobjects/CampaignMember`, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    jsonBody: { CampaignId: campaignId, [personField]: personId, Status: desiredStatus },\n    timeoutMs: 5000,\n  });\n  if (createResp.err || !createResp.resp || ![200, 201, 204].includes(createResp.resp.status)) {\n    const override =\n      createResp.err ||\n      sfdcErrorSummary(createResp.resp ? createResp.resp.status : 0, createResp.resp ? createResp.resp.json : null, createResp.resp ? createResp.resp.text : '');\n    if (isLockError(override)) {\n      outputs.lock_error = 'true';\n      outputs.operation = 'lock_error';\n      otherPayload.lock_error = true;\n      otherPayload.operation = 'lock_error';\n      return finish({\n        actionName: THIS_ACTION,\n        level: 'WARN',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { sfdc_create_campaign_member: override }),\n        errorMessage: 'Salesforce POST failed with lock error',\n      });\n    }\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_create_campaign_member: override }),\n      errorMessage: 'Salesforce POST failed',\n    });\n  }\n\n  outputs.membership_id = safeStr(createResp.resp.json && createResp.resp.json.id);\n  if (!outputs.membership_id) {\n    const fallback = await sfdcQueryOne({\n      instanceUrl,\n      apiVersion,\n      accessToken,\n      soql: `SELECT Id FROM CampaignMember WHERE CampaignId = '${campaignId}' AND ${personField} = '${personId}' LIMIT 1`,\n      httpStatuses,\n      name: 'sfdc_query_post_create',\n      timeoutMs: 4000,\n    });\n    outputs.membership_id = safeStr(fallback.record && fallback.record.Id);\n  }\n  if (!outputs.membership_id) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_create_campaign_member: 'Created but could not locate id' }),\n      errorMessage: 'CampaignMember created but id not found',\n    });\n  }\n\n  const verified = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status FROM CampaignMember WHERE Id = '${outputs.membership_id}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_verify',\n    timeoutMs: 4000,\n  });\n  if (verified.err || !verified.record) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_query_verify: verified.err || 'No CampaignMember record' }),\n      errorMessage: 'Unable to verify CampaignMember after POST',\n    });\n  }\n\n  outputs.membership_status = safeStr(verified.record.Status);\n  outputs.operation = 'created';\n  otherPayload.operation = 'created';\n  otherPayload.verified_status = outputs.membership_status;\n  if (norm(outputs.membership_status) !== norm(desiredStatus)) {\n    httpStatuses.sfdc_verify_status = 'INVALID';\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        sfdc_verify_status: `Status mismatch (wanted='${desiredStatus}', got='${outputs.membership_status}')`,\n      }),\n      errorMessage: 'CampaignMember status did not persist (likely invalid status for campaign)',\n    });\n  }\n\n  return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    callback(await core(event || {}));\n  } catch (err) {\n    const outputs = blankOutputs();\n    const httpStatuses = { uncaught_exception: 'Request_error' };\n    callback(\n      finalize(outputs, {\n        actionName: THIS_ACTION,\n        level: 'ERROR',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { uncaught_exception: safeStr(err && err.message ? err.message : err) }),\n        otherPayload: { operation: 'failed', action_variant: ACTION_VARIANT },\n        errorMessage: 'Unhandled exception in new_delegate_record_CCA1',\n      })\n    );\n  }\n};\n\nexports._internal = {\n  core,\n  getPrivateKeyFromSecrets,\n  getSalesforceAccessToken,\n  blankOutputs,\n  finalize,\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "hs_delegate_id",
+          "value": {
+            "propertyName": "hs_object_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_id",
+          "value": {
+            "propertyName": "salesforce_campaign_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforcecontactid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforcecontactid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforceleadid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforceleadid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "email",
+          "value": {
+            "propertyName": "email",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "registration_status",
+          "value": {
+            "propertyName": "registration_status",
+            "type": "OBJECT_PROPERTY"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "http",
+          "type": "STRING"
+        },
+        {
+          "name": "http_message",
+          "type": "STRING"
+        },
+        {
+          "name": "lock_error",
+          "type": "STRING"
+        },
+        {
+          "name": "log",
+          "type": "STRING"
+        },
+        {
+          "name": "m_id_known",
+          "type": "STRING"
+        },
+        {
+          "name": "m_id_status",
+          "type": "STRING"
+        },
+        {
+          "name": "membership_id",
+          "type": "NUMBER"
+        },
+        {
+          "name": "operation",
+          "type": "STRING"
+        },
+        {
+          "name": "other",
+          "type": "STRING"
+        }
+      ],
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "2"
+      },
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "2",
+      "secretNames": [
+        "grafana_token",
+        "grafana_user"
+      ],
+      "sourceCode": "/*\n * Masks delegate workflow fields and ships a Grafana Loki log line for the preceding action result.\n * Branch before: Run after the preceding workflow action emits loggable fields for this delegate record path.\n * Branch after: Branch only on logger result: dry run, logged successfully, or logging error.\n * Expected inputs: upstream workflow fields via event.inputFields limited to log, http, http_message, and other.\n * Expected outputs: logged, simulated, payload (dry run only), logging_http_status, error.\n */\nconst https = require('https');\nconst { URL } = require('url');\n\nconst DEFAULT_ACTION = 'new_delegate_record_CCA1';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst GRAFANA_ENV = 'prod';\nconst JOB_NAME = 'swoogo_sfdc_campaign';\nconst LOKI_ENDPOINT = (process.env.LOKI_URL || process.env.grafana_url || 'https://logs-prod-012.grafana.net/loki/api/v1/push').trim();\nconst EMAIL_RE = /([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})/g;\n\nfunction safeJsonParse(value, fallback) {\n  if (!value) return fallback;\n  if (typeof value === 'string') {\n    try {\n      const parsed = JSON.parse(value);\n      return parsed && typeof parsed === 'object' ? parsed : fallback;\n    } catch (_err) {\n      return fallback;\n    }\n  }\n  return typeof value === 'object' ? value : fallback;\n}\n\nfunction maskLocal(local) {\n  const value = String(local || '');\n  const first = value.charAt(0) || 'a';\n  const last = value.charAt(value.length - 1) || first;\n  return `${first}***${last}`;\n}\n\nfunction maskEmailString(value) {\n  return String(value || '').replace(EMAIL_RE, (_match, local, domain) => `${maskLocal(local)}@${domain}`);\n}\n\nfunction maskDeep(value) {\n  if (Array.isArray(value)) return value.map((item) => maskDeep(item));\n  if (value && typeof value === 'object') {\n    return Object.keys(value).reduce((acc, key) => {\n      acc[key] = maskDeep(value[key]);\n      return acc;\n    }, {});\n  }\n  if (typeof value === 'string') return maskEmailString(value);\n  return value;\n}\n\nfunction buildLogLine(inputs) {\n  const parsedLog = safeJsonParse(inputs.log, {});\n  const payload = {\n    workflow_action: parsedLog.workflow_action || inputs.workflow_action || DEFAULT_ACTION,\n    workflow_name: parsedLog.workflow_name || inputs.workflow_name || WORKFLOW_NAME,\n    level: parsedLog.level || inputs.level || 'INFO',\n    error_state: parsedLog.error_state || inputs.error_state || '0',\n    hs_delegate_id: parsedLog.hs_delegate_id || inputs.hs_delegate_id || '',\n    salesforce_campaign_id: parsedLog.salesforce_campaign_id || inputs.salesforce_campaign_id || '',\n    salesforce_campaign_membership_id:\n      parsedLog.salesforce_campaign_membership_id || inputs.salesforce_campaign_membership_id || '',\n    membership_id: parsedLog.membership_id || inputs.membership_id || '',\n    membership_status: parsedLog.membership_status || inputs.membership_status || '',\n    salesforce_campaign_member_status:\n      parsedLog.salesforce_campaign_member_status || inputs.salesforce_campaign_member_status || '',\n    salesforcecontactid: parsedLog.salesforcecontactid || inputs.salesforcecontactid || '',\n    salesforceleadid: parsedLog.salesforceleadid || inputs.salesforceleadid || '',\n    email: parsedLog.email || inputs.email || '',\n    error: {\n      http: (parsedLog.error && parsedLog.error.http) || safeJsonParse(inputs.http, {}),\n      http_message: (parsedLog.error && parsedLog.error.http_message) || safeJsonParse(inputs.http_message, {}),\n    },\n    other: safeJsonParse(inputs.other, parsedLog.other || {}),\n  };\n  payload.campaign_member_id = payload.membership_id || payload.salesforce_campaign_membership_id || '';\n  if (parsedLog.operation || payload.other.operation) payload.operation = parsedLog.operation || payload.other.operation;\n  if (parsedLog.action_variant || payload.other.action_variant) payload.action_variant = parsedLog.action_variant || payload.other.action_variant;\n  if (payload.other.lock_error !== undefined) payload.lock_error = payload.other.lock_error;\n  return JSON.stringify(maskDeep(payload));\n}\n\nasync function postJson(url, payload, user, token) {\n  const target = new URL(url);\n  const body = JSON.stringify(payload);\n  const auth = `Basic ${Buffer.from(`${user}:${token}`).toString('base64')}`;\n\n  if (typeof fetch === 'function') {\n    const resp = await fetch(target.toString(), {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', Authorization: auth },\n      body,\n    });\n    const text = await resp.text();\n    if (resp.status < 200 || resp.status >= 300) throw new Error(text || `HTTP ${resp.status}`);\n    return { status: resp.status };\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(\n      target,\n      {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          'Content-Length': Buffer.byteLength(body),\n          Authorization: auth,\n        },\n      },\n      (res) => {\n        const chunks = [];\n        res.on('data', (chunk) => chunks.push(chunk));\n        res.on('end', () => {\n          const text = Buffer.concat(chunks).toString('utf8');\n          if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {\n            reject(new Error(text || `HTTP ${res.statusCode || 0}`));\n            return;\n          }\n          resolve({ status: res.statusCode || 0 });\n        });\n      }\n    );\n    req.on('error', reject);\n    req.write(body);\n    req.end();\n  });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    const user = (process.env.grafana_user || process.env.GRAFANA_USER || '').trim();\n    const token = (process.env.grafana_token || process.env.GRAFANA_TOKEN || '').trim();\n    if (!user || !token) throw new Error('Missing grafana_user or grafana_token environment variables.');\n\n    const payload = {\n      streams: [\n        {\n          stream: {\n            service_name: 'hubspot',\n            environment: GRAFANA_ENV,\n            process: 'workflow',\n            team: 'marketing_technology',\n            job: JOB_NAME,\n          },\n          values: [[`${Date.now()}000000`, buildLogLine((event && event.inputFields) || {})]],\n        },\n      ],\n    };\n\n    if (String(process.env.GRAFANA_DRY_RUN || '').trim() === '1') {\n      callback({ outputFields: { logged: false, simulated: true, payload } });\n      return;\n    }\n\n    const res = await postJson(LOKI_ENDPOINT, payload, user, token);\n    callback({ outputFields: { logged: true, simulated: false, logging_http_status: res.status } });\n  } catch (error) {\n    callback({\n      outputFields: {\n        logged: false,\n        error: String(error && error.message ? error.message : error),\n      },\n    });\n  }\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "log",
+          "value": {
+            "actionId": "1",
+            "dataKey": "log",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http",
+          "value": {
+            "actionId": "1",
+            "dataKey": "http",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http_message",
+          "value": {
+            "actionId": "1",
+            "dataKey": "http_message",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "other",
+          "value": {
+            "actionId": "1",
+            "dataKey": "other",
+            "type": "FIELD_DATA"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "error",
+          "type": "STRING"
+        },
+        {
+          "name": "logged",
+          "type": "STRING"
+        },
+        {
+          "name": "logging_http_status",
+          "type": "STRING"
+        },
+        {
+          "name": "payload",
+          "type": "STRING"
+        },
+        {
+          "name": "simulated",
+          "type": "STRING"
+        }
+      ],
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "10"
+      },
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "3",
+      "secretNames": [
+        "SF_CONSUMER_KEY_PROD",
+        "SF_JWT_PART_02",
+        "SF_JWT_PART_03",
+        "SF_JWT_PART_01"
+      ],
+      "sourceCode": "/*\n * Authenticates to Salesforce, verifies an existing CampaignMember, patches its status when needed, and returns verified membership details for the delegate workflow.\n * Branch before: Run only when a CampaignMember already exists and needs a status patch, or when retrying a failed patch.\n * Branch after: Route by output state: skipped, patched, lock_error, or error.\n * Expected inputs: hs_delegate_id, salesforce_campaign_membership_id, registration_status, optional salesforce_campaign_id, salesforcecontactid, salesforceleadid, email.\n * Expected outputs: log, http, http_message, other, lock_error.\n */\nconst crypto = require('crypto');\nconst https = require('https');\nconst { URL } = require('url');\n\nconst THIS_ACTION = 'new_delegate_record_CCA2';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst ACTION_VARIANT = 'patch';\nconst DEFAULT_LOGIN_URL = 'https://login.salesforce.com';\nconst DEFAULT_API_VERSION = 'v62.0';\nconst SF_PROD_CONSUMER_KEY_SECRET = 'SF_CONSUMER_KEY_PROD';\nconst SF_PROD_USERNAME = 'hubspot.integration@nanoporetech.com';\nconst SF_PROD_JWT_PART_NAMES = ['SF_JWT_PART_01', 'SF_JWT_PART_02', 'SF_JWT_PART_03'];\nconst EXPOSED_OUTPUT_FIELDS = ['log', 'http', 'http_message', 'other', 'lock_error'];\n\nfunction safeStr(value) {\n  return String(value == null ? '' : value).trim();\n}\n\nfunction norm(value) {\n  return safeStr(value).toLowerCase();\n}\n\nfunction desiredStatusFromRegistrationStatus(value) {\n  const normalized = norm(value);\n  if (!normalized) return 'Registered';\n  if (normalized === 'confirmed') return 'Registered';\n  if (normalized === 'attended') return 'Attended';\n  return '';\n}\n\nfunction jsonCompact(obj) {\n  return JSON.stringify(obj == null ? {} : obj);\n}\n\nfunction selectOutputFields(outputs) {\n  return EXPOSED_OUTPUT_FIELDS.reduce((acc, key) => {\n    acc[key] = outputs[key];\n    return acc;\n  }, {});\n}\n\nfunction friendly(value) {\n  const map = {\n    200: 'OK',\n    201: 'Created',\n    204: 'No content',\n    400: 'Bad Request – Your request is wrong',\n    401: 'Unauthorized (credentials)',\n    403: 'Forbidden (scope)',\n    404: 'Not Found',\n    405: 'Method Not Allowed',\n    408: 'Request timeout',\n    409: 'Conflict',\n    422: 'Unprocessable entity',\n    429: 'Too Many Requests',\n    500: 'Internal Server Error',\n    502: 'Bad gateway / processing limit met',\n    503: 'Service temporarily unavailable',\n    504: 'Gateway timeout / processing limit met',\n  };\n  if (typeof value === 'number') return map[value] || `HTTP ${value}`;\n  const text = String(value || '');\n  if (text === 'Timed_out') return 'Timeout';\n  if (text === 'Request_error') return 'Request error';\n  return 'No response';\n}\n\nfunction deriveHttpMessage(httpDict, overrides) {\n  const out = {};\n  Object.entries(httpDict || {}).forEach(([key, value]) => {\n    const asNum = Number(value);\n    out[key] = Number.isFinite(asNum) ? friendly(asNum) : friendly(value);\n  });\n  Object.entries(overrides || {}).forEach(([key, value]) => {\n    if (value !== undefined && value !== null && String(value).trim() !== '') out[key] = String(value);\n  });\n  return out;\n}\n\nfunction envFirst(keys) {\n  const list = Array.isArray(keys) ? keys : [keys];\n  for (const key of list) {\n    const raw = process.env[key];\n    if (raw == null) continue;\n    const value = String(raw).trim();\n    if (value) return value;\n  }\n  return '';\n}\n\nfunction sfdcApiVersion() {\n  const raw = envFirst(['salesforce_api_version', 'SFDC_API_VERSION', 'SALESFORCE_API_VERSION']) || DEFAULT_API_VERSION;\n  const value = raw.replace(/^\\//, '').trim();\n  if (!value) return DEFAULT_API_VERSION;\n  if (/^\\d/.test(value)) return `v${value}`;\n  return value;\n}\n\nfunction base64url(input) {\n  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input), 'utf8');\n  return buf.toString('base64').replace(/=/g, '').replace(/\\+/g, '-').replace(/\\//g, '_');\n}\n\nfunction buildJwt({ iss, sub, aud, expiresInSec, keyObject }) {\n  const now = Math.floor(Date.now() / 1000);\n  const header = { alg: 'RS256', typ: 'JWT' };\n  const payload = { iss, sub, aud, iat: now, exp: now + expiresInSec };\n  const signingInput = `${base64url(jsonCompact(header))}.${base64url(jsonCompact(payload))}`;\n  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), keyObject);\n  return `${signingInput}.${base64url(signature)}`;\n}\n\nfunction validateBase64String(b64) {\n  if (!b64) return { ok: false, reason: 'empty' };\n  if (!/^[A-Za-z0-9+/=]+$/.test(b64)) return { ok: false, reason: 'non_base64_chars' };\n  if (b64.length % 4 !== 0) return { ok: false, reason: 'length_not_multiple_of_4' };\n  return { ok: true };\n}\n\nfunction getPrivateKeyFromSecrets(httpStatuses) {\n  const parts = SF_PROD_JWT_PART_NAMES.map((name) => envFirst(name));\n  if (parts.some((part) => !part)) {\n    httpStatuses.sfdc_key = 'NO_RESP';\n    return {\n      keyObject: null,\n      meta: { key_scheme: 'SF_JWT_PART_prod_3parts', key_parts_expected: SF_PROD_JWT_PART_NAMES.length, key_parts_found: parts.filter(Boolean).length },\n      error: 'Missing private key parts',\n    };\n  }\n  const scheme = 'SF_JWT_PART_prod_3parts';\n\n  const b64 = parts.map((item) => String(item).replace(/\\s+/g, '')).join('');\n  const valid = validateBase64String(b64);\n  if (!valid.ok) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, key_b64_reason: valid.reason },\n      error: `Invalid base64 private key (${valid.reason})`,\n    };\n  }\n\n  let pem = '';\n  try {\n    pem = Buffer.from(b64, 'base64').toString('utf8');\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length },\n      error: `Key decode failed: ${safeStr(err && err.message)}`,\n    };\n  }\n\n  if (!pem.startsWith('-----BEGIN')) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_prefix: pem.slice(0, 20) },\n      error: 'Decoded key is not PEM',\n    };\n  }\n\n  try {\n    const keyObject = crypto.createPrivateKey(pem);\n    const fingerprint = crypto.createHash('sha256').update(pem).digest('hex').slice(0, 12);\n    return {\n      keyObject,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, pem_len: pem.length, key_fp: fingerprint },\n      error: null,\n    };\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_len: pem.length },\n      error: `PEM parse failed: ${safeStr(err && err.message)}`,\n    };\n  }\n}\n\nfunction sfdcErrorSummary(status, data, text) {\n  if (Array.isArray(data)) {\n    return data\n      .filter((item) => item && typeof item === 'object')\n      .map((item) => {\n        const code = safeStr(item.errorCode);\n        const msg = safeStr(item.message);\n        if (code && msg) return `${code}: ${msg}`;\n        return msg;\n      })\n      .filter(Boolean)\n      .join('; ');\n  }\n  if (data && typeof data === 'object') {\n    const err = safeStr(data.error);\n    const desc = safeStr(data.error_description);\n    if (err && desc) return `${err}: ${desc}`;\n    if (safeStr(data.message)) return safeStr(data.message);\n  }\n  return safeStr(text) || `HTTP ${status}`;\n}\n\nasync function httpRequest({ method, url, headers, params, body, timeoutMs }) {\n  const target = new URL(url);\n  Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, String(value)));\n\n  if (typeof fetch === 'function') {\n    const controller = new AbortController();\n    const timer = setTimeout(() => controller.abort(), timeoutMs);\n    try {\n      const resp = await fetch(target.toString(), {\n        method,\n        headers: headers || {},\n        body,\n        signal: controller.signal,\n      });\n      const text = await resp.text();\n      let json = null;\n      try {\n        json = text ? JSON.parse(text) : null;\n      } catch (_err) {\n        json = null;\n      }\n      return { status: resp.status, text, json };\n    } finally {\n      clearTimeout(timer);\n    }\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(target, { method, headers: headers || {}, timeout: timeoutMs }, (res) => {\n      const chunks = [];\n      res.on('data', (chunk) => chunks.push(chunk));\n      res.on('end', () => {\n        const text = Buffer.concat(chunks).toString('utf8');\n        let json = null;\n        try {\n          json = text ? JSON.parse(text) : null;\n        } catch (_err) {\n          json = null;\n        }\n        resolve({ status: res.statusCode || 0, text, json });\n      });\n    });\n    req.on('timeout', () => req.destroy(new Error('timed_out')));\n    req.on('error', reject);\n    if (body) req.write(body);\n    req.end();\n  });\n}\n\nasync function callOnce(name, method, url, options) {\n  try {\n    const payload =\n      options.jsonBody != null ? Buffer.from(JSON.stringify(options.jsonBody), 'utf8') : options.dataBody != null ? Buffer.from(String(options.dataBody), 'utf8') : undefined;\n    const resp = await httpRequest({\n      method,\n      url,\n      headers: options.headers,\n      params: options.params,\n      body: payload,\n      timeoutMs: options.timeoutMs,\n    });\n    options.http[name] = resp.status || 'NO_RESP';\n    return { resp, err: null };\n  } catch (err) {\n    const message = safeStr(err && err.message);\n    options.http[name] = message === 'timed_out' || message.toLowerCase().includes('abort') ? 'Timed_out' : 'Request_error';\n    return { resp: null, err: message === 'timed_out' || message.toLowerCase().includes('abort') ? 'REQUEST -> Timeout' : `REQUEST -> ${message}` };\n  }\n}\n\nfunction sfdcBase(instanceUrl, apiVersion) {\n  return `${String(instanceUrl).replace(/\\/+$/, '')}/services/data/${apiVersion}`;\n}\n\nfunction sfdcHeaders(accessToken) {\n  return {\n    Authorization: `Bearer ${accessToken}`,\n    'Content-Type': 'application/json',\n    Accept: 'application/json',\n  };\n}\n\nasync function sfdcQueryOne({ instanceUrl, apiVersion, accessToken, soql, httpStatuses, name, timeoutMs }) {\n  const url = `${sfdcBase(instanceUrl, apiVersion)}/query`;\n  const { resp, err } = await callOnce(name, 'GET', url, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    params: { q: soql },\n    timeoutMs,\n  });\n  if (err || !resp) return { record: null, err: err || 'No response' };\n  if (resp.status !== 200) return { record: null, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n  const records = (resp.json && resp.json.records) || [];\n  return { record: records.length ? records[0] : null, err: null };\n}\n\nasync function getSalesforceAccessToken(httpStatuses) {\n  const loginUrl =\n    envFirst(['salesforce_login_url', 'SFDC_LOGIN_URL', 'SALESFORCE_LOGIN_URL', 'SF_LOGIN_AUD', 'SF_LOGIN_URL']) || DEFAULT_LOGIN_URL;\n  const aud = String(loginUrl).replace(/\\/+$/, '');\n  const clientId = envFirst(SF_PROD_CONSUMER_KEY_SECRET);\n  const username = SF_PROD_USERNAME;\n\n  if (!clientId) {\n    httpStatuses.sfdc_auth = 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer' }, err: `Missing ${SF_PROD_CONSUMER_KEY_SECRET}` };\n  }\n\n  const { keyObject, meta: keyMeta, error: keyErr } = getPrivateKeyFromSecrets(httpStatuses);\n  if (keyErr || !keyObject) {\n    httpStatuses.sfdc_auth = httpStatuses.sfdc_auth || 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: keyErr || 'Missing private key' };\n  }\n\n  const assertion = buildJwt({ iss: clientId, sub: username, aud, expiresInSec: 180, keyObject });\n  const tokenUrl = `${aud}/services/oauth2/token`;\n  const body = new URLSearchParams({\n    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',\n    assertion,\n  }).toString();\n\n  const { resp, err } = await callOnce('sfdc_auth', 'POST', tokenUrl, {\n    http: httpStatuses,\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },\n    dataBody: body,\n    timeoutMs: 5000,\n  });\n  if (err || !resp) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: err || 'No response' };\n  if (resp.status !== 200) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n\n  const accessToken = safeStr(resp.json && resp.json.access_token);\n  const instanceUrl = safeStr(resp.json && resp.json.instance_url);\n  if (!accessToken || !instanceUrl) {\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: 'Token response missing access_token/instance_url' };\n  }\n  return { instanceUrl, accessToken, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: null };\n}\n\nfunction blankOutputs() {\n  return {\n    membership_id: '',\n    membership_status: '',\n    operation: '',\n    lock_error: 'false',\n    error: '',\n    error_message: '',\n    error_state: '1',\n    http: '{}',\n    http_message: '{}',\n    hs_delegate_id: '',\n    level: 'INFO',\n    log: '{}',\n    other: '{}',\n    salesforce_campaign_id: '',\n    salesforce_campaign_member_status: '',\n    salesforce_campaign_membership_id: '',\n    salesforcecontactid: '',\n    salesforceleadid: '',\n    email: '',\n    workflow_action: THIS_ACTION,\n    workflow_name: WORKFLOW_NAME,\n  };\n}\n\nfunction finalize(outputs, payload) {\n  const httpMessage = payload.httpMessage || deriveHttpMessage(payload.httpStatuses, {});\n  outputs.workflow_action = payload.actionName || THIS_ACTION;\n  outputs.workflow_name = payload.workflowName || WORKFLOW_NAME;\n  outputs.level = payload.level;\n  outputs.error_state = String(payload.errorState);\n  outputs.error_message = safeStr(payload.errorMessage || '');\n  outputs.http = jsonCompact(payload.httpStatuses);\n  outputs.http_message = jsonCompact(httpMessage);\n  outputs.other = jsonCompact(payload.otherPayload || {});\n\n  const logPayload = {\n    workflow_action: outputs.workflow_action,\n    level: outputs.level,\n    error_state: outputs.error_state,\n    workflow_name: outputs.workflow_name,\n    hs_delegate_id: outputs.hs_delegate_id,\n    salesforce_campaign_id: outputs.salesforce_campaign_id,\n    salesforce_campaign_membership_id: outputs.salesforce_campaign_membership_id,\n    membership_id: outputs.membership_id,\n    membership_status: outputs.membership_status,\n    salesforce_campaign_member_status: outputs.salesforce_campaign_member_status,\n    salesforcecontactid: outputs.salesforcecontactid,\n    salesforceleadid: outputs.salesforceleadid,\n    email: outputs.email,\n    error: { http: payload.httpStatuses, http_message: httpMessage },\n    operation: outputs.operation || safeStr(payload.otherPayload && payload.otherPayload.operation),\n    action_variant: ACTION_VARIANT,\n  };\n  if (payload.otherPayload && Object.prototype.hasOwnProperty.call(payload.otherPayload, 'lock_error')) {\n    logPayload.lock_error = payload.otherPayload.lock_error;\n  }\n  outputs.log = jsonCompact(logPayload);\n  return { outputFields: selectOutputFields(outputs) };\n}\n\nfunction isLockError(message) {\n  return String(message || '').includes('UNABLE_TO_LOCK_ROW');\n}\n\nasync function core(event) {\n  const inputs = (event && event.inputFields) || {};\n  const hsDelegateId = safeStr(inputs.hs_delegate_id);\n  const campaignId = safeStr(inputs.salesforce_campaign_id);\n  const registrationStatus = norm(inputs.registration_status);\n  const desiredStatus = desiredStatusFromRegistrationStatus(registrationStatus);\n  const membershipIdIn = safeStr(inputs.salesforce_campaign_membership_id);\n  const salesforcecontactid = safeStr(inputs.salesforcecontactid);\n  const salesforceleadid = safeStr(inputs.salesforceleadid);\n  const email = safeStr(inputs.email);\n\n  const outputs = blankOutputs();\n  outputs.hs_delegate_id = hsDelegateId;\n  outputs.salesforce_campaign_id = campaignId;\n  outputs.salesforce_campaign_member_status = desiredStatus;\n  outputs.salesforce_campaign_membership_id = membershipIdIn;\n  outputs.salesforcecontactid = salesforcecontactid;\n  outputs.salesforceleadid = salesforceleadid;\n  outputs.email = email;\n\n  const httpStatuses = {};\n  const otherPayload = {\n    operation: 'failed',\n    action_variant: ACTION_VARIANT,\n    auth_method: '',\n    api_version: sfdcApiVersion(),\n    registration_status: registrationStatus,\n    desired_status: desiredStatus,\n  };\n\n  const finish = (payload) => finalize(outputs, { ...payload, otherPayload });\n\n  if (!hsDelegateId) httpStatuses.input_hs_delegate_id = 'NO_RESP';\n  if (!desiredStatus) {\n    httpStatuses.input_registration_status = 'INVALID';\n  }\n  if (!membershipIdIn) httpStatuses.input_salesforce_campaign_membership_id = 'NO_RESP';\n  if (Object.keys(httpStatuses).length) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        input_registration_status: \"registration_status must be blank, 'confirmed', or 'attended'\",\n      }),\n      errorMessage: 'Missing or invalid inputs',\n    });\n  }\n\n  const { instanceUrl, accessToken, meta, err: authErr } = await getSalesforceAccessToken(httpStatuses);\n  Object.assign(otherPayload, meta || {});\n  otherPayload.auth_method = (meta && meta.auth_method) || '';\n  if (authErr || !instanceUrl || !accessToken) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_auth: authErr || 'Missing Salesforce auth' }),\n      errorMessage: 'Salesforce authentication failed',\n    });\n  }\n\n  const apiVersion = otherPayload.api_version;\n  outputs.membership_id = membershipIdIn;\n  const verified = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status, CampaignId, ContactId, LeadId FROM CampaignMember WHERE Id = '${membershipIdIn}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_verify',\n    timeoutMs: 4000,\n  });\n  if (verified.err || !verified.record) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_query_verify: verified.err || 'CampaignMember not found' }),\n      errorMessage: 'Unable to verify existing CampaignMember',\n    });\n  }\n\n  if (campaignId && safeStr(verified.record.CampaignId) && safeStr(verified.record.CampaignId) !== campaignId) {\n    httpStatuses.input_salesforce_campaign_id = 'INVALID';\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        input_salesforce_campaign_id: 'Existing CampaignMember does not match CampaignId',\n      }),\n      errorMessage: 'CampaignMember/Campaign mismatch',\n    });\n  }\n\n  if (!outputs.salesforcecontactid && verified.record.ContactId) outputs.salesforcecontactid = safeStr(verified.record.ContactId);\n  if (!outputs.salesforceleadid && verified.record.LeadId) outputs.salesforceleadid = safeStr(verified.record.LeadId);\n\n  outputs.membership_status = safeStr(verified.record.Status);\n  otherPayload.current_status = outputs.membership_status;\n  if (norm(outputs.membership_status) === norm(desiredStatus)) {\n    outputs.operation = 'skipped';\n    otherPayload.operation = 'skipped';\n    return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n  }\n\n  const patchResp = await callOnce('sfdc_patch_campaign_member', 'PATCH', `${sfdcBase(instanceUrl, apiVersion)}/sobjects/CampaignMember/${membershipIdIn}`, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    jsonBody: { Status: desiredStatus },\n    timeoutMs: 5000,\n  });\n  if (patchResp.err || !patchResp.resp || patchResp.resp.status !== 204) {\n    const override =\n      patchResp.err ||\n      sfdcErrorSummary(patchResp.resp ? patchResp.resp.status : 0, patchResp.resp ? patchResp.resp.json : null, patchResp.resp ? patchResp.resp.text : '');\n    if (isLockError(override)) {\n      outputs.lock_error = 'true';\n      outputs.operation = 'lock_error';\n      otherPayload.lock_error = true;\n      otherPayload.operation = 'lock_error';\n      return finish({\n        actionName: THIS_ACTION,\n        level: 'WARN',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { sfdc_patch_campaign_member: override }),\n        errorMessage: 'Salesforce PATCH failed with lock error',\n      });\n    }\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_patch_campaign_member: override }),\n      errorMessage: 'Salesforce PATCH failed',\n    });\n  }\n\n  const postPatch = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status FROM CampaignMember WHERE Id = '${membershipIdIn}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_verify_after_patch',\n    timeoutMs: 4000,\n  });\n  if (postPatch.err || !postPatch.record) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        sfdc_query_verify_after_patch: postPatch.err || 'No CampaignMember record',\n      }),\n      errorMessage: 'Unable to verify CampaignMember after PATCH',\n    });\n  }\n\n  outputs.membership_status = safeStr(postPatch.record.Status);\n  outputs.operation = 'patched';\n  otherPayload.operation = 'patched';\n  otherPayload.verified_status = outputs.membership_status;\n  if (norm(outputs.membership_status) !== norm(desiredStatus)) {\n    httpStatuses.sfdc_verify_status = 'INVALID';\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        sfdc_verify_status: `Status mismatch (wanted='${desiredStatus}', got='${outputs.membership_status}')`,\n      }),\n      errorMessage: 'CampaignMember status did not persist (likely invalid status for campaign)',\n    });\n  }\n\n  return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    callback(await core(event || {}));\n  } catch (err) {\n    const outputs = blankOutputs();\n    const httpStatuses = { uncaught_exception: 'Request_error' };\n    callback(\n      finalize(outputs, {\n        actionName: THIS_ACTION,\n        level: 'ERROR',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { uncaught_exception: safeStr(err && err.message ? err.message : err) }),\n        otherPayload: { operation: 'failed', action_variant: ACTION_VARIANT },\n        errorMessage: 'Unhandled exception in new_delegate_record_CCA2',\n      })\n    );\n  }\n};\n\nexports._internal = {\n  core,\n  getPrivateKeyFromSecrets,\n  getSalesforceAccessToken,\n  blankOutputs,\n  finalize,\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "hs_delegate_id",
+          "value": {
+            "propertyName": "hs_object_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_membership_id",
+          "value": {
+            "propertyName": "salesforce_campaign_membership_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_id",
+          "value": {
+            "propertyName": "salesforce_campaign_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforcecontactid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforcecontactid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforceleadid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforceleadid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "email",
+          "value": {
+            "propertyName": "email",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "registration_status",
+          "value": {
+            "propertyName": "registration_status",
+            "type": "OBJECT_PROPERTY"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "http",
+          "type": "STRING"
+        },
+        {
+          "name": "http_message",
+          "type": "STRING"
+        },
+        {
+          "name": "lock_error",
+          "type": "STRING"
+        },
+        {
+          "name": "log",
+          "type": "STRING"
+        },
+        {
+          "name": "other",
+          "type": "STRING"
+        }
+      ],
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "4"
+      },
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "4",
+      "secretNames": [
+        "grafana_token",
+        "grafana_user"
+      ],
+      "sourceCode": "/*\n * Masks delegate workflow fields and ships a Grafana Loki log line for the preceding action result.\n * Branch before: Run after the preceding workflow action emits loggable fields for this delegate record path.\n * Branch after: Branch only on logger result: dry run, logged successfully, or logging error.\n * Expected inputs: upstream workflow fields via event.inputFields limited to log, http, http_message, and other.\n * Expected outputs: logged, simulated, payload (dry run only), logging_http_status, error.\n */\nconst https = require('https');\nconst { URL } = require('url');\n\nconst DEFAULT_ACTION = 'new_delegate_record_CCA2';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst GRAFANA_ENV = 'prod';\nconst JOB_NAME = 'swoogo_sfdc_campaign';\nconst LOKI_ENDPOINT = (process.env.LOKI_URL || process.env.grafana_url || 'https://logs-prod-012.grafana.net/loki/api/v1/push').trim();\nconst EMAIL_RE = /([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})/g;\n\nfunction safeJsonParse(value, fallback) {\n  if (!value) return fallback;\n  if (typeof value === 'string') {\n    try {\n      const parsed = JSON.parse(value);\n      return parsed && typeof parsed === 'object' ? parsed : fallback;\n    } catch (_err) {\n      return fallback;\n    }\n  }\n  return typeof value === 'object' ? value : fallback;\n}\n\nfunction maskLocal(local) {\n  const value = String(local || '');\n  const first = value.charAt(0) || 'a';\n  const last = value.charAt(value.length - 1) || first;\n  return `${first}***${last}`;\n}\n\nfunction maskEmailString(value) {\n  return String(value || '').replace(EMAIL_RE, (_match, local, domain) => `${maskLocal(local)}@${domain}`);\n}\n\nfunction maskDeep(value) {\n  if (Array.isArray(value)) return value.map((item) => maskDeep(item));\n  if (value && typeof value === 'object') {\n    return Object.keys(value).reduce((acc, key) => {\n      acc[key] = maskDeep(value[key]);\n      return acc;\n    }, {});\n  }\n  if (typeof value === 'string') return maskEmailString(value);\n  return value;\n}\n\nfunction buildLogLine(inputs) {\n  const parsedLog = safeJsonParse(inputs.log, {});\n  const payload = {\n    workflow_action: parsedLog.workflow_action || inputs.workflow_action || DEFAULT_ACTION,\n    workflow_name: parsedLog.workflow_name || inputs.workflow_name || WORKFLOW_NAME,\n    level: parsedLog.level || inputs.level || 'INFO',\n    error_state: parsedLog.error_state || inputs.error_state || '0',\n    hs_delegate_id: parsedLog.hs_delegate_id || inputs.hs_delegate_id || '',\n    salesforce_campaign_id: parsedLog.salesforce_campaign_id || inputs.salesforce_campaign_id || '',\n    salesforce_campaign_membership_id:\n      parsedLog.salesforce_campaign_membership_id || inputs.salesforce_campaign_membership_id || '',\n    membership_id: parsedLog.membership_id || inputs.membership_id || '',\n    membership_status: parsedLog.membership_status || inputs.membership_status || '',\n    salesforce_campaign_member_status:\n      parsedLog.salesforce_campaign_member_status || inputs.salesforce_campaign_member_status || '',\n    salesforcecontactid: parsedLog.salesforcecontactid || inputs.salesforcecontactid || '',\n    salesforceleadid: parsedLog.salesforceleadid || inputs.salesforceleadid || '',\n    email: parsedLog.email || inputs.email || '',\n    error: {\n      http: (parsedLog.error && parsedLog.error.http) || safeJsonParse(inputs.http, {}),\n      http_message: (parsedLog.error && parsedLog.error.http_message) || safeJsonParse(inputs.http_message, {}),\n    },\n    other: safeJsonParse(inputs.other, parsedLog.other || {}),\n  };\n  payload.campaign_member_id = payload.membership_id || payload.salesforce_campaign_membership_id || '';\n  if (parsedLog.operation || payload.other.operation) payload.operation = parsedLog.operation || payload.other.operation;\n  if (parsedLog.action_variant || payload.other.action_variant) payload.action_variant = parsedLog.action_variant || payload.other.action_variant;\n  if (payload.other.lock_error !== undefined) payload.lock_error = payload.other.lock_error;\n  return JSON.stringify(maskDeep(payload));\n}\n\nasync function postJson(url, payload, user, token) {\n  const target = new URL(url);\n  const body = JSON.stringify(payload);\n  const auth = `Basic ${Buffer.from(`${user}:${token}`).toString('base64')}`;\n\n  if (typeof fetch === 'function') {\n    const resp = await fetch(target.toString(), {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', Authorization: auth },\n      body,\n    });\n    const text = await resp.text();\n    if (resp.status < 200 || resp.status >= 300) throw new Error(text || `HTTP ${resp.status}`);\n    return { status: resp.status };\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(\n      target,\n      {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          'Content-Length': Buffer.byteLength(body),\n          Authorization: auth,\n        },\n      },\n      (res) => {\n        const chunks = [];\n        res.on('data', (chunk) => chunks.push(chunk));\n        res.on('end', () => {\n          const text = Buffer.concat(chunks).toString('utf8');\n          if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {\n            reject(new Error(text || `HTTP ${res.statusCode || 0}`));\n            return;\n          }\n          resolve({ status: res.statusCode || 0 });\n        });\n      }\n    );\n    req.on('error', reject);\n    req.write(body);\n    req.end();\n  });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    const user = (process.env.grafana_user || process.env.GRAFANA_USER || '').trim();\n    const token = (process.env.grafana_token || process.env.GRAFANA_TOKEN || '').trim();\n    if (!user || !token) throw new Error('Missing grafana_user or grafana_token environment variables.');\n\n    const payload = {\n      streams: [\n        {\n          stream: {\n            service_name: 'hubspot',\n            environment: GRAFANA_ENV,\n            process: 'workflow',\n            team: 'marketing_technology',\n            job: JOB_NAME,\n          },\n          values: [[`${Date.now()}000000`, buildLogLine((event && event.inputFields) || {})]],\n        },\n      ],\n    };\n\n    if (String(process.env.GRAFANA_DRY_RUN || '').trim() === '1') {\n      callback({ outputFields: { logged: false, simulated: true, payload } });\n      return;\n    }\n\n    const res = await postJson(LOKI_ENDPOINT, payload, user, token);\n    callback({ outputFields: { logged: true, simulated: false, logging_http_status: res.status } });\n  } catch (error) {\n    callback({\n      outputFields: {\n        logged: false,\n        error: String(error && error.message ? error.message : error),\n      },\n    });\n  }\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "log",
+          "value": {
+            "actionId": "3",
+            "dataKey": "log",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http",
+          "value": {
+            "actionId": "3",
+            "dataKey": "http",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http_message",
+          "value": {
+            "actionId": "3",
+            "dataKey": "http_message",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "other",
+          "value": {
+            "actionId": "3",
+            "dataKey": "other",
+            "type": "FIELD_DATA"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "error",
+          "type": "STRING"
+        },
+        {
+          "name": "logged",
+          "type": "STRING"
+        },
+        {
+          "name": "logging_http_status",
+          "type": "STRING"
+        },
+        {
+          "name": "payload",
+          "type": "STRING"
+        },
+        {
+          "name": "simulated",
+          "type": "STRING"
+        }
+      ],
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "5",
+      "secretNames": [
+        "SF_CONSUMER_KEY_PROD",
+        "SF_JWT_PART_02",
+        "SF_JWT_PART_03",
+        "SF_JWT_PART_01"
+      ],
+      "sourceCode": "/*\n * Retries Salesforce CampaignMember creation after a failed post, then returns member details or patch guidance for the delegate workflow.\n * Branch before: None unless upstream routing already selected the create or retry-create path for this delegate.\n * Branch after: Route by output state: skipped, found_needs_patch, created, lock_error, or error.\n * Expected inputs: hs_delegate_id, salesforce_campaign_id, registration_status, exactly one of salesforcecontactid or salesforceleadid, optional salesforce_campaign_membership_id, email.\n * Expected outputs: log, http, http_message, other, membership_id, operation.\n */\nconst crypto = require('crypto');\nconst https = require('https');\nconst { URL } = require('url');\n\nconst THIS_ACTION = 'new_delegate_record_CCA3';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst ACTION_VARIANT = 'post_retry';\nconst DEFAULT_LOGIN_URL = 'https://login.salesforce.com';\nconst DEFAULT_API_VERSION = 'v62.0';\nconst SF_PROD_CONSUMER_KEY_SECRET = 'SF_CONSUMER_KEY_PROD';\nconst SF_PROD_USERNAME = 'hubspot.integration@nanoporetech.com';\nconst SF_PROD_JWT_PART_NAMES = ['SF_JWT_PART_01', 'SF_JWT_PART_02', 'SF_JWT_PART_03'];\nconst EXPOSED_OUTPUT_FIELDS = ['log', 'http', 'http_message', 'other', 'membership_id', 'operation'];\n\nfunction safeStr(value) {\n  return String(value == null ? '' : value).trim();\n}\n\nfunction norm(value) {\n  return safeStr(value).toLowerCase();\n}\n\nfunction desiredStatusFromRegistrationStatus(value) {\n  const normalized = norm(value);\n  if (!normalized) return 'Registered';\n  if (normalized === 'confirmed') return 'Registered';\n  if (normalized === 'attended') return 'Attended';\n  return '';\n}\n\nfunction jsonCompact(obj) {\n  return JSON.stringify(obj == null ? {} : obj);\n}\n\nfunction selectOutputFields(outputs) {\n  return EXPOSED_OUTPUT_FIELDS.reduce((acc, key) => {\n    acc[key] = outputs[key];\n    return acc;\n  }, {});\n}\n\nfunction friendly(value) {\n  const map = {\n    200: 'OK',\n    201: 'Created',\n    204: 'No content',\n    400: 'Bad Request – Your request is wrong',\n    401: 'Unauthorized (credentials)',\n    403: 'Forbidden (scope)',\n    404: 'Not Found',\n    405: 'Method Not Allowed',\n    408: 'Request timeout',\n    409: 'Conflict',\n    422: 'Unprocessable entity',\n    429: 'Too Many Requests',\n    500: 'Internal Server Error',\n    502: 'Bad gateway / processing limit met',\n    503: 'Service temporarily unavailable',\n    504: 'Gateway timeout / processing limit met',\n  };\n  if (typeof value === 'number') return map[value] || `HTTP ${value}`;\n  const text = String(value || '');\n  if (text === 'Timed_out') return 'Timeout';\n  if (text === 'Request_error') return 'Request error';\n  return 'No response';\n}\n\nfunction deriveHttpMessage(httpDict, overrides) {\n  const out = {};\n  Object.entries(httpDict || {}).forEach(([key, value]) => {\n    const asNum = Number(value);\n    out[key] = Number.isFinite(asNum) ? friendly(asNum) : friendly(value);\n  });\n  Object.entries(overrides || {}).forEach(([key, value]) => {\n    if (value !== undefined && value !== null && String(value).trim() !== '') out[key] = String(value);\n  });\n  return out;\n}\n\nfunction envFirst(keys) {\n  const list = Array.isArray(keys) ? keys : [keys];\n  for (const key of list) {\n    const raw = process.env[key];\n    if (raw == null) continue;\n    const value = String(raw).trim();\n    if (value) return value;\n  }\n  return '';\n}\n\nfunction sfdcApiVersion() {\n  const raw = envFirst(['salesforce_api_version', 'SFDC_API_VERSION', 'SALESFORCE_API_VERSION']) || DEFAULT_API_VERSION;\n  const value = raw.replace(/^\\//, '').trim();\n  if (!value) return DEFAULT_API_VERSION;\n  if (/^\\d/.test(value)) return `v${value}`;\n  return value;\n}\n\nfunction base64url(input) {\n  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input), 'utf8');\n  return buf.toString('base64').replace(/=/g, '').replace(/\\+/g, '-').replace(/\\//g, '_');\n}\n\nfunction buildJwt({ iss, sub, aud, expiresInSec, keyObject }) {\n  const now = Math.floor(Date.now() / 1000);\n  const header = { alg: 'RS256', typ: 'JWT' };\n  const payload = { iss, sub, aud, iat: now, exp: now + expiresInSec };\n  const signingInput = `${base64url(jsonCompact(header))}.${base64url(jsonCompact(payload))}`;\n  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), keyObject);\n  return `${signingInput}.${base64url(signature)}`;\n}\n\nfunction validateBase64String(b64) {\n  if (!b64) return { ok: false, reason: 'empty' };\n  if (!/^[A-Za-z0-9+/=]+$/.test(b64)) return { ok: false, reason: 'non_base64_chars' };\n  if (b64.length % 4 !== 0) return { ok: false, reason: 'length_not_multiple_of_4' };\n  return { ok: true };\n}\n\nfunction getPrivateKeyFromSecrets(httpStatuses) {\n  const parts = SF_PROD_JWT_PART_NAMES.map((name) => envFirst(name));\n  if (parts.some((part) => !part)) {\n    httpStatuses.sfdc_key = 'NO_RESP';\n    return {\n      keyObject: null,\n      meta: { key_scheme: 'SF_JWT_PART_prod_3parts', key_parts_expected: SF_PROD_JWT_PART_NAMES.length, key_parts_found: parts.filter(Boolean).length },\n      error: 'Missing private key parts',\n    };\n  }\n  const scheme = 'SF_JWT_PART_prod_3parts';\n\n  const b64 = parts.map((item) => String(item).replace(/\\s+/g, '')).join('');\n  const valid = validateBase64String(b64);\n  if (!valid.ok) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, key_b64_reason: valid.reason },\n      error: `Invalid base64 private key (${valid.reason})`,\n    };\n  }\n\n  let pem = '';\n  try {\n    pem = Buffer.from(b64, 'base64').toString('utf8');\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length },\n      error: `Key decode failed: ${safeStr(err && err.message)}`,\n    };\n  }\n\n  if (!pem.startsWith('-----BEGIN')) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_prefix: pem.slice(0, 20) },\n      error: 'Decoded key is not PEM',\n    };\n  }\n\n  try {\n    const keyObject = crypto.createPrivateKey(pem);\n    const fingerprint = crypto.createHash('sha256').update(pem).digest('hex').slice(0, 12);\n    return {\n      keyObject,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, pem_len: pem.length, key_fp: fingerprint },\n      error: null,\n    };\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_len: pem.length },\n      error: `PEM parse failed: ${safeStr(err && err.message)}`,\n    };\n  }\n}\n\nfunction sfdcErrorSummary(status, data, text) {\n  if (Array.isArray(data)) {\n    return data\n      .filter((item) => item && typeof item === 'object')\n      .map((item) => {\n        const code = safeStr(item.errorCode);\n        const msg = safeStr(item.message);\n        if (code && msg) return `${code}: ${msg}`;\n        return msg;\n      })\n      .filter(Boolean)\n      .join('; ');\n  }\n  if (data && typeof data === 'object') {\n    const err = safeStr(data.error);\n    const desc = safeStr(data.error_description);\n    if (err && desc) return `${err}: ${desc}`;\n    if (safeStr(data.message)) return safeStr(data.message);\n  }\n  return safeStr(text) || `HTTP ${status}`;\n}\n\nasync function httpRequest({ method, url, headers, params, body, timeoutMs }) {\n  const target = new URL(url);\n  Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, String(value)));\n\n  if (typeof fetch === 'function') {\n    const controller = new AbortController();\n    const timer = setTimeout(() => controller.abort(), timeoutMs);\n    try {\n      const resp = await fetch(target.toString(), {\n        method,\n        headers: headers || {},\n        body,\n        signal: controller.signal,\n      });\n      const text = await resp.text();\n      let json = null;\n      try {\n        json = text ? JSON.parse(text) : null;\n      } catch (_err) {\n        json = null;\n      }\n      return { status: resp.status, text, json };\n    } finally {\n      clearTimeout(timer);\n    }\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(target, { method, headers: headers || {}, timeout: timeoutMs }, (res) => {\n      const chunks = [];\n      res.on('data', (chunk) => chunks.push(chunk));\n      res.on('end', () => {\n        const text = Buffer.concat(chunks).toString('utf8');\n        let json = null;\n        try {\n          json = text ? JSON.parse(text) : null;\n        } catch (_err) {\n          json = null;\n        }\n        resolve({ status: res.statusCode || 0, text, json });\n      });\n    });\n    req.on('timeout', () => req.destroy(new Error('timed_out')));\n    req.on('error', reject);\n    if (body) req.write(body);\n    req.end();\n  });\n}\n\nasync function callOnce(name, method, url, options) {\n  try {\n    const payload =\n      options.jsonBody != null ? Buffer.from(JSON.stringify(options.jsonBody), 'utf8') : options.dataBody != null ? Buffer.from(String(options.dataBody), 'utf8') : undefined;\n    const resp = await httpRequest({\n      method,\n      url,\n      headers: options.headers,\n      params: options.params,\n      body: payload,\n      timeoutMs: options.timeoutMs,\n    });\n    options.http[name] = resp.status || 'NO_RESP';\n    return { resp, err: null };\n  } catch (err) {\n    const message = safeStr(err && err.message);\n    options.http[name] = message === 'timed_out' || message.toLowerCase().includes('abort') ? 'Timed_out' : 'Request_error';\n    return { resp: null, err: message === 'timed_out' || message.toLowerCase().includes('abort') ? 'REQUEST -> Timeout' : `REQUEST -> ${message}` };\n  }\n}\n\nfunction sfdcBase(instanceUrl, apiVersion) {\n  return `${String(instanceUrl).replace(/\\/+$/, '')}/services/data/${apiVersion}`;\n}\n\nfunction sfdcHeaders(accessToken) {\n  return {\n    Authorization: `Bearer ${accessToken}`,\n    'Content-Type': 'application/json',\n    Accept: 'application/json',\n  };\n}\n\nasync function sfdcQueryOne({ instanceUrl, apiVersion, accessToken, soql, httpStatuses, name, timeoutMs }) {\n  const url = `${sfdcBase(instanceUrl, apiVersion)}/query`;\n  const { resp, err } = await callOnce(name, 'GET', url, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    params: { q: soql },\n    timeoutMs,\n  });\n  if (err || !resp) return { record: null, err: err || 'No response' };\n  if (resp.status !== 200) return { record: null, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n  const records = (resp.json && resp.json.records) || [];\n  return { record: records.length ? records[0] : null, err: null };\n}\n\nasync function getSalesforceAccessToken(httpStatuses) {\n  const loginUrl =\n    envFirst(['salesforce_login_url', 'SFDC_LOGIN_URL', 'SALESFORCE_LOGIN_URL', 'SF_LOGIN_AUD', 'SF_LOGIN_URL']) || DEFAULT_LOGIN_URL;\n  const aud = String(loginUrl).replace(/\\/+$/, '');\n  const clientId = envFirst(SF_PROD_CONSUMER_KEY_SECRET);\n  const username = SF_PROD_USERNAME;\n\n  if (!clientId) {\n    httpStatuses.sfdc_auth = 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer' }, err: `Missing ${SF_PROD_CONSUMER_KEY_SECRET}` };\n  }\n\n  const { keyObject, meta: keyMeta, error: keyErr } = getPrivateKeyFromSecrets(httpStatuses);\n  if (keyErr || !keyObject) {\n    httpStatuses.sfdc_auth = httpStatuses.sfdc_auth || 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: keyErr || 'Missing private key' };\n  }\n\n  const assertion = buildJwt({ iss: clientId, sub: username, aud, expiresInSec: 180, keyObject });\n  const tokenUrl = `${aud}/services/oauth2/token`;\n  const body = new URLSearchParams({\n    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',\n    assertion,\n  }).toString();\n\n  const { resp, err } = await callOnce('sfdc_auth', 'POST', tokenUrl, {\n    http: httpStatuses,\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },\n    dataBody: body,\n    timeoutMs: 5000,\n  });\n  if (err || !resp) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: err || 'No response' };\n  if (resp.status !== 200) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n\n  const accessToken = safeStr(resp.json && resp.json.access_token);\n  const instanceUrl = safeStr(resp.json && resp.json.instance_url);\n  if (!accessToken || !instanceUrl) {\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: 'Token response missing access_token/instance_url' };\n  }\n  return { instanceUrl, accessToken, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: null };\n}\n\nfunction blankOutputs() {\n  return {\n    membership_id: '',\n    membership_status: '',\n    operation: '',\n    lock_error: 'false',\n    error: '',\n    error_message: '',\n    error_state: '1',\n    http: '{}',\n    http_message: '{}',\n    hs_delegate_id: '',\n    level: 'INFO',\n    log: '{}',\n    other: '{}',\n    salesforce_campaign_id: '',\n    salesforce_campaign_member_status: '',\n    salesforce_campaign_membership_id: '',\n    salesforcecontactid: '',\n    salesforceleadid: '',\n    email: '',\n    workflow_action: THIS_ACTION,\n    workflow_name: WORKFLOW_NAME,\n  };\n}\n\nfunction finalize(outputs, payload) {\n  const httpMessage = payload.httpMessage || deriveHttpMessage(payload.httpStatuses, {});\n  outputs.workflow_action = payload.actionName || THIS_ACTION;\n  outputs.workflow_name = payload.workflowName || WORKFLOW_NAME;\n  outputs.level = payload.level;\n  outputs.error_state = String(payload.errorState);\n  outputs.error_message = safeStr(payload.errorMessage || '');\n  outputs.http = jsonCompact(payload.httpStatuses);\n  outputs.http_message = jsonCompact(httpMessage);\n  outputs.other = jsonCompact(payload.otherPayload || {});\n\n  const logPayload = {\n    workflow_action: outputs.workflow_action,\n    level: outputs.level,\n    error_state: outputs.error_state,\n    workflow_name: outputs.workflow_name,\n    hs_delegate_id: outputs.hs_delegate_id,\n    salesforce_campaign_id: outputs.salesforce_campaign_id,\n    salesforce_campaign_membership_id: outputs.salesforce_campaign_membership_id,\n    membership_id: outputs.membership_id,\n    membership_status: outputs.membership_status,\n    salesforce_campaign_member_status: outputs.salesforce_campaign_member_status,\n    salesforcecontactid: outputs.salesforcecontactid,\n    salesforceleadid: outputs.salesforceleadid,\n    email: outputs.email,\n    error: { http: payload.httpStatuses, http_message: httpMessage },\n    operation: outputs.operation || safeStr(payload.otherPayload && payload.otherPayload.operation),\n    action_variant: ACTION_VARIANT,\n  };\n  if (payload.otherPayload && Object.prototype.hasOwnProperty.call(payload.otherPayload, 'lock_error')) {\n    logPayload.lock_error = payload.otherPayload.lock_error;\n  }\n  outputs.log = jsonCompact(logPayload);\n  return { outputFields: selectOutputFields(outputs) };\n}\n\nfunction isLockError(message) {\n  return String(message || '').includes('UNABLE_TO_LOCK_ROW');\n}\n\nasync function core(event) {\n  const inputs = (event && event.inputFields) || {};\n  const hsDelegateId = safeStr(inputs.hs_delegate_id);\n  const campaignId = safeStr(inputs.salesforce_campaign_id);\n  const registrationStatus = norm(inputs.registration_status);\n  const desiredStatus = desiredStatusFromRegistrationStatus(registrationStatus);\n  const membershipIdIn = safeStr(inputs.salesforce_campaign_membership_id);\n  const salesforcecontactid = safeStr(inputs.salesforcecontactid);\n  const salesforceleadid = safeStr(inputs.salesforceleadid);\n  const email = safeStr(inputs.email);\n\n  const outputs = blankOutputs();\n  outputs.hs_delegate_id = hsDelegateId;\n  outputs.salesforce_campaign_id = campaignId;\n  outputs.salesforce_campaign_member_status = desiredStatus;\n  outputs.salesforce_campaign_membership_id = membershipIdIn;\n  outputs.salesforcecontactid = salesforcecontactid;\n  outputs.salesforceleadid = salesforceleadid;\n  outputs.email = email;\n\n  const httpStatuses = {};\n  const otherPayload = {\n    operation: 'failed',\n    action_variant: ACTION_VARIANT,\n    auth_method: '',\n    api_version: sfdcApiVersion(),\n    registration_status: registrationStatus,\n    desired_status: desiredStatus,\n  };\n\n  const finish = (payload) => finalize(outputs, { ...payload, otherPayload });\n\n  if (!hsDelegateId) httpStatuses.input_hs_delegate_id = 'NO_RESP';\n  if (!campaignId) httpStatuses.input_salesforce_campaign_id = 'NO_RESP';\n  if (!desiredStatus) {\n    httpStatuses.input_registration_status = 'INVALID';\n  }\n  if (salesforcecontactid && salesforceleadid) httpStatuses.input_salesforce_ids = 'INVALID';\n  if (!salesforcecontactid && !salesforceleadid) httpStatuses.input_salesforce_ids = 'NO_RESP';\n  if (Object.keys(httpStatuses).length) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        input_registration_status: \"registration_status must be blank, 'confirmed', or 'attended'\",\n        input_salesforce_ids: 'Provide exactly one of salesforcecontactid or salesforceleadid',\n      }),\n      errorMessage: 'Missing or invalid inputs',\n    });\n  }\n\n  const personField = salesforcecontactid ? 'ContactId' : 'LeadId';\n  const personId = salesforcecontactid || salesforceleadid;\n  otherPayload.person_field = personField;\n  otherPayload.person_id = personId;\n\n  const { instanceUrl, accessToken, meta, err: authErr } = await getSalesforceAccessToken(httpStatuses);\n  Object.assign(otherPayload, meta || {});\n  otherPayload.auth_method = (meta && meta.auth_method) || '';\n  if (authErr || !instanceUrl || !accessToken) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_auth: authErr || 'Missing Salesforce auth' }),\n      errorMessage: 'Salesforce authentication failed',\n    });\n  }\n\n  const apiVersion = otherPayload.api_version;\n  const existing = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status, CampaignId, ContactId, LeadId FROM CampaignMember WHERE CampaignId = '${campaignId}' AND ${personField} = '${personId}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_existing',\n    timeoutMs: 4000,\n  });\n  if (existing.err) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_query_existing: existing.err }),\n      errorMessage: 'Unable to query CampaignMember',\n    });\n  }\n\n  if (existing.record) {\n    outputs.membership_id = safeStr(existing.record.Id);\n    outputs.membership_status = safeStr(existing.record.Status);\n    otherPayload.current_status = outputs.membership_status;\n    if (norm(outputs.membership_status) === norm(desiredStatus)) {\n      outputs.operation = 'skipped';\n      otherPayload.operation = 'skipped';\n      return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n    }\n    outputs.operation = 'found_needs_patch';\n    otherPayload.operation = 'found_needs_patch';\n    otherPayload.needs_patch = true;\n    return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n  }\n\n  const createResp = await callOnce('sfdc_create_campaign_member', 'POST', `${sfdcBase(instanceUrl, apiVersion)}/sobjects/CampaignMember`, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    jsonBody: { CampaignId: campaignId, [personField]: personId, Status: desiredStatus },\n    timeoutMs: 5000,\n  });\n  if (createResp.err || !createResp.resp || ![200, 201, 204].includes(createResp.resp.status)) {\n    const override =\n      createResp.err ||\n      sfdcErrorSummary(createResp.resp ? createResp.resp.status : 0, createResp.resp ? createResp.resp.json : null, createResp.resp ? createResp.resp.text : '');\n    if (isLockError(override)) {\n      outputs.lock_error = 'true';\n      outputs.operation = 'lock_error';\n      otherPayload.lock_error = true;\n      otherPayload.operation = 'lock_error';\n      return finish({\n        actionName: THIS_ACTION,\n        level: 'WARN',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { sfdc_create_campaign_member: override }),\n        errorMessage: 'Salesforce POST retry failed with lock error',\n      });\n    }\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_create_campaign_member: override }),\n      errorMessage: 'Salesforce POST retry failed',\n    });\n  }\n\n  outputs.membership_id = safeStr(createResp.resp.json && createResp.resp.json.id);\n  if (!outputs.membership_id) {\n    const fallback = await sfdcQueryOne({\n      instanceUrl,\n      apiVersion,\n      accessToken,\n      soql: `SELECT Id FROM CampaignMember WHERE CampaignId = '${campaignId}' AND ${personField} = '${personId}' LIMIT 1`,\n      httpStatuses,\n      name: 'sfdc_query_post_create',\n      timeoutMs: 4000,\n    });\n    outputs.membership_id = safeStr(fallback.record && fallback.record.Id);\n  }\n  if (!outputs.membership_id) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_create_campaign_member: 'Created but could not locate id' }),\n      errorMessage: 'CampaignMember created but id not found',\n    });\n  }\n\n  const verified = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status FROM CampaignMember WHERE Id = '${outputs.membership_id}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_verify',\n    timeoutMs: 4000,\n  });\n  if (verified.err || !verified.record) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_query_verify: verified.err || 'No CampaignMember record' }),\n      errorMessage: 'Unable to verify CampaignMember after POST retry',\n    });\n  }\n\n  outputs.membership_status = safeStr(verified.record.Status);\n  outputs.operation = 'created';\n  otherPayload.operation = 'created';\n  otherPayload.verified_status = outputs.membership_status;\n  if (norm(outputs.membership_status) !== norm(desiredStatus)) {\n    httpStatuses.sfdc_verify_status = 'INVALID';\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        sfdc_verify_status: `Status mismatch (wanted='${desiredStatus}', got='${outputs.membership_status}')`,\n      }),\n      errorMessage: 'CampaignMember status did not persist (likely invalid status for campaign)',\n    });\n  }\n\n  return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    callback(await core(event || {}));\n  } catch (err) {\n    const outputs = blankOutputs();\n    const httpStatuses = { uncaught_exception: 'Request_error' };\n    callback(\n      finalize(outputs, {\n        actionName: THIS_ACTION,\n        level: 'ERROR',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { uncaught_exception: safeStr(err && err.message ? err.message : err) }),\n        otherPayload: { operation: 'failed', action_variant: ACTION_VARIANT },\n        errorMessage: 'Unhandled exception in new_delegate_record_CCA3',\n      })\n    );\n  }\n};\n\nexports._internal = {\n  core,\n  getPrivateKeyFromSecrets,\n  getSalesforceAccessToken,\n  blankOutputs,\n  finalize,\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "hs_delegate_id",
+          "value": {
+            "propertyName": "hs_object_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_id",
+          "value": {
+            "propertyName": "salesforce_campaign_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforcecontactid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforcecontactid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforceleadid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforceleadid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_membership_id",
+          "value": {
+            "propertyName": "salesforce_campaign_membership_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "email",
+          "value": {
+            "propertyName": "email",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "registration_status",
+          "value": {
+            "propertyName": "registration_status",
+            "type": "OBJECT_PROPERTY"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "http",
+          "type": "STRING"
+        },
+        {
+          "name": "http_message",
+          "type": "STRING"
+        },
+        {
+          "name": "log",
+          "type": "STRING"
+        },
+        {
+          "name": "membership_id",
+          "type": "STRING"
+        },
+        {
+          "name": "operation",
+          "type": "STRING"
+        },
+        {
+          "name": "other",
+          "type": "STRING"
+        }
+      ],
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "6"
+      },
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "6",
+      "secretNames": [
+        "grafana_token",
+        "grafana_user"
+      ],
+      "sourceCode": "/*\n * Masks delegate workflow fields and ships a Grafana Loki log line for the preceding action result.\n * Branch before: Run after the preceding workflow action emits loggable fields for this delegate record path.\n * Branch after: Branch only on logger result: dry run, logged successfully, or logging error.\n * Expected inputs: upstream workflow fields via event.inputFields limited to log, http, http_message, and other.\n * Expected outputs: logged, simulated, payload (dry run only), logging_http_status, error.\n */\nconst https = require('https');\nconst { URL } = require('url');\n\nconst DEFAULT_ACTION = 'new_delegate_record_CCA3';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst GRAFANA_ENV = 'prod';\nconst JOB_NAME = 'swoogo_sfdc_campaign';\nconst LOKI_ENDPOINT = (process.env.LOKI_URL || process.env.grafana_url || 'https://logs-prod-012.grafana.net/loki/api/v1/push').trim();\nconst EMAIL_RE = /([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})/g;\n\nfunction safeJsonParse(value, fallback) {\n  if (!value) return fallback;\n  if (typeof value === 'string') {\n    try {\n      const parsed = JSON.parse(value);\n      return parsed && typeof parsed === 'object' ? parsed : fallback;\n    } catch (_err) {\n      return fallback;\n    }\n  }\n  return typeof value === 'object' ? value : fallback;\n}\n\nfunction maskLocal(local) {\n  const value = String(local || '');\n  const first = value.charAt(0) || 'a';\n  const last = value.charAt(value.length - 1) || first;\n  return `${first}***${last}`;\n}\n\nfunction maskEmailString(value) {\n  return String(value || '').replace(EMAIL_RE, (_match, local, domain) => `${maskLocal(local)}@${domain}`);\n}\n\nfunction maskDeep(value) {\n  if (Array.isArray(value)) return value.map((item) => maskDeep(item));\n  if (value && typeof value === 'object') {\n    return Object.keys(value).reduce((acc, key) => {\n      acc[key] = maskDeep(value[key]);\n      return acc;\n    }, {});\n  }\n  if (typeof value === 'string') return maskEmailString(value);\n  return value;\n}\n\nfunction buildLogLine(inputs) {\n  const parsedLog = safeJsonParse(inputs.log, {});\n  const payload = {\n    workflow_action: parsedLog.workflow_action || inputs.workflow_action || DEFAULT_ACTION,\n    workflow_name: parsedLog.workflow_name || inputs.workflow_name || WORKFLOW_NAME,\n    level: parsedLog.level || inputs.level || 'INFO',\n    error_state: parsedLog.error_state || inputs.error_state || '0',\n    hs_delegate_id: parsedLog.hs_delegate_id || inputs.hs_delegate_id || '',\n    salesforce_campaign_id: parsedLog.salesforce_campaign_id || inputs.salesforce_campaign_id || '',\n    salesforce_campaign_membership_id:\n      parsedLog.salesforce_campaign_membership_id || inputs.salesforce_campaign_membership_id || '',\n    membership_id: parsedLog.membership_id || inputs.membership_id || '',\n    membership_status: parsedLog.membership_status || inputs.membership_status || '',\n    salesforce_campaign_member_status:\n      parsedLog.salesforce_campaign_member_status || inputs.salesforce_campaign_member_status || '',\n    salesforcecontactid: parsedLog.salesforcecontactid || inputs.salesforcecontactid || '',\n    salesforceleadid: parsedLog.salesforceleadid || inputs.salesforceleadid || '',\n    email: parsedLog.email || inputs.email || '',\n    error: {\n      http: (parsedLog.error && parsedLog.error.http) || safeJsonParse(inputs.http, {}),\n      http_message: (parsedLog.error && parsedLog.error.http_message) || safeJsonParse(inputs.http_message, {}),\n    },\n    other: safeJsonParse(inputs.other, parsedLog.other || {}),\n  };\n  payload.campaign_member_id = payload.membership_id || payload.salesforce_campaign_membership_id || '';\n  if (parsedLog.operation || payload.other.operation) payload.operation = parsedLog.operation || payload.other.operation;\n  if (parsedLog.action_variant || payload.other.action_variant) payload.action_variant = parsedLog.action_variant || payload.other.action_variant;\n  if (payload.other.lock_error !== undefined) payload.lock_error = payload.other.lock_error;\n  return JSON.stringify(maskDeep(payload));\n}\n\nasync function postJson(url, payload, user, token) {\n  const target = new URL(url);\n  const body = JSON.stringify(payload);\n  const auth = `Basic ${Buffer.from(`${user}:${token}`).toString('base64')}`;\n\n  if (typeof fetch === 'function') {\n    const resp = await fetch(target.toString(), {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', Authorization: auth },\n      body,\n    });\n    const text = await resp.text();\n    if (resp.status < 200 || resp.status >= 300) throw new Error(text || `HTTP ${resp.status}`);\n    return { status: resp.status };\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(\n      target,\n      {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          'Content-Length': Buffer.byteLength(body),\n          Authorization: auth,\n        },\n      },\n      (res) => {\n        const chunks = [];\n        res.on('data', (chunk) => chunks.push(chunk));\n        res.on('end', () => {\n          const text = Buffer.concat(chunks).toString('utf8');\n          if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {\n            reject(new Error(text || `HTTP ${res.statusCode || 0}`));\n            return;\n          }\n          resolve({ status: res.statusCode || 0 });\n        });\n      }\n    );\n    req.on('error', reject);\n    req.write(body);\n    req.end();\n  });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    const user = (process.env.grafana_user || process.env.GRAFANA_USER || '').trim();\n    const token = (process.env.grafana_token || process.env.GRAFANA_TOKEN || '').trim();\n    if (!user || !token) throw new Error('Missing grafana_user or grafana_token environment variables.');\n\n    const payload = {\n      streams: [\n        {\n          stream: {\n            service_name: 'hubspot',\n            environment: GRAFANA_ENV,\n            process: 'workflow',\n            team: 'marketing_technology',\n            job: JOB_NAME,\n          },\n          values: [[`${Date.now()}000000`, buildLogLine((event && event.inputFields) || {})]],\n        },\n      ],\n    };\n\n    if (String(process.env.GRAFANA_DRY_RUN || '').trim() === '1') {\n      callback({ outputFields: { logged: false, simulated: true, payload } });\n      return;\n    }\n\n    const res = await postJson(LOKI_ENDPOINT, payload, user, token);\n    callback({ outputFields: { logged: true, simulated: false, logging_http_status: res.status } });\n  } catch (error) {\n    callback({\n      outputFields: {\n        logged: false,\n        error: String(error && error.message ? error.message : error),\n      },\n    });\n  }\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "log",
+          "value": {
+            "actionId": "5",
+            "dataKey": "log",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http",
+          "value": {
+            "actionId": "5",
+            "dataKey": "http",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http_message",
+          "value": {
+            "actionId": "5",
+            "dataKey": "http_message",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "other",
+          "value": {
+            "actionId": "5",
+            "dataKey": "other",
+            "type": "FIELD_DATA"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "error",
+          "type": "STRING"
+        },
+        {
+          "name": "logged",
+          "type": "STRING"
+        },
+        {
+          "name": "logging_http_status",
+          "type": "STRING"
+        },
+        {
+          "name": "payload",
+          "type": "STRING"
+        },
+        {
+          "name": "simulated",
+          "type": "STRING"
+        }
+      ],
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "7",
+      "secretNames": [
+        "SF_CONSUMER_KEY_PROD",
+        "SF_JWT_PART_02",
+        "SF_JWT_PART_03",
+        "SF_JWT_PART_01"
+      ],
+      "sourceCode": "/*\n * Retries Salesforce CampaignMember status patching after a failed patch, then returns verified membership details for the delegate workflow.\n * Branch before: Run only when a CampaignMember already exists and needs a status patch, or when retrying a failed patch.\n * Branch after: Route by output state: skipped, patched, lock_error, or error.\n * Expected inputs: hs_delegate_id, salesforce_campaign_membership_id, registration_status, optional salesforce_campaign_id, salesforcecontactid, salesforceleadid, email.\n * Expected outputs: log, http, http_message, other.\n */\nconst crypto = require('crypto');\nconst https = require('https');\nconst { URL } = require('url');\n\nconst THIS_ACTION = 'new_delegate_record_CCA4';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst ACTION_VARIANT = 'patch_retry';\nconst DEFAULT_LOGIN_URL = 'https://login.salesforce.com';\nconst DEFAULT_API_VERSION = 'v62.0';\nconst SF_PROD_CONSUMER_KEY_SECRET = 'SF_CONSUMER_KEY_PROD';\nconst SF_PROD_USERNAME = 'hubspot.integration@nanoporetech.com';\nconst SF_PROD_JWT_PART_NAMES = ['SF_JWT_PART_01', 'SF_JWT_PART_02', 'SF_JWT_PART_03'];\nconst EXPOSED_OUTPUT_FIELDS = ['log', 'http', 'http_message', 'other'];\n\nfunction safeStr(value) {\n  return String(value == null ? '' : value).trim();\n}\n\nfunction norm(value) {\n  return safeStr(value).toLowerCase();\n}\n\nfunction desiredStatusFromRegistrationStatus(value) {\n  const normalized = norm(value);\n  if (!normalized) return 'Registered';\n  if (normalized === 'confirmed') return 'Registered';\n  if (normalized === 'attended') return 'Attended';\n  return '';\n}\n\nfunction jsonCompact(obj) {\n  return JSON.stringify(obj == null ? {} : obj);\n}\n\nfunction selectOutputFields(outputs) {\n  return EXPOSED_OUTPUT_FIELDS.reduce((acc, key) => {\n    acc[key] = outputs[key];\n    return acc;\n  }, {});\n}\n\nfunction friendly(value) {\n  const map = {\n    200: 'OK',\n    201: 'Created',\n    204: 'No content',\n    400: 'Bad Request – Your request is wrong',\n    401: 'Unauthorized (credentials)',\n    403: 'Forbidden (scope)',\n    404: 'Not Found',\n    405: 'Method Not Allowed',\n    408: 'Request timeout',\n    409: 'Conflict',\n    422: 'Unprocessable entity',\n    429: 'Too Many Requests',\n    500: 'Internal Server Error',\n    502: 'Bad gateway / processing limit met',\n    503: 'Service temporarily unavailable',\n    504: 'Gateway timeout / processing limit met',\n  };\n  if (typeof value === 'number') return map[value] || `HTTP ${value}`;\n  const text = String(value || '');\n  if (text === 'Timed_out') return 'Timeout';\n  if (text === 'Request_error') return 'Request error';\n  return 'No response';\n}\n\nfunction deriveHttpMessage(httpDict, overrides) {\n  const out = {};\n  Object.entries(httpDict || {}).forEach(([key, value]) => {\n    const asNum = Number(value);\n    out[key] = Number.isFinite(asNum) ? friendly(asNum) : friendly(value);\n  });\n  Object.entries(overrides || {}).forEach(([key, value]) => {\n    if (value !== undefined && value !== null && String(value).trim() !== '') out[key] = String(value);\n  });\n  return out;\n}\n\nfunction envFirst(keys) {\n  const list = Array.isArray(keys) ? keys : [keys];\n  for (const key of list) {\n    const raw = process.env[key];\n    if (raw == null) continue;\n    const value = String(raw).trim();\n    if (value) return value;\n  }\n  return '';\n}\n\nfunction sfdcApiVersion() {\n  const raw = envFirst(['salesforce_api_version', 'SFDC_API_VERSION', 'SALESFORCE_API_VERSION']) || DEFAULT_API_VERSION;\n  const value = raw.replace(/^\\//, '').trim();\n  if (!value) return DEFAULT_API_VERSION;\n  if (/^\\d/.test(value)) return `v${value}`;\n  return value;\n}\n\nfunction base64url(input) {\n  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input), 'utf8');\n  return buf.toString('base64').replace(/=/g, '').replace(/\\+/g, '-').replace(/\\//g, '_');\n}\n\nfunction buildJwt({ iss, sub, aud, expiresInSec, keyObject }) {\n  const now = Math.floor(Date.now() / 1000);\n  const header = { alg: 'RS256', typ: 'JWT' };\n  const payload = { iss, sub, aud, iat: now, exp: now + expiresInSec };\n  const signingInput = `${base64url(jsonCompact(header))}.${base64url(jsonCompact(payload))}`;\n  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput, 'utf8'), keyObject);\n  return `${signingInput}.${base64url(signature)}`;\n}\n\nfunction validateBase64String(b64) {\n  if (!b64) return { ok: false, reason: 'empty' };\n  if (!/^[A-Za-z0-9+/=]+$/.test(b64)) return { ok: false, reason: 'non_base64_chars' };\n  if (b64.length % 4 !== 0) return { ok: false, reason: 'length_not_multiple_of_4' };\n  return { ok: true };\n}\n\nfunction getPrivateKeyFromSecrets(httpStatuses) {\n  const parts = SF_PROD_JWT_PART_NAMES.map((name) => envFirst(name));\n  if (parts.some((part) => !part)) {\n    httpStatuses.sfdc_key = 'NO_RESP';\n    return {\n      keyObject: null,\n      meta: { key_scheme: 'SF_JWT_PART_prod_3parts', key_parts_expected: SF_PROD_JWT_PART_NAMES.length, key_parts_found: parts.filter(Boolean).length },\n      error: 'Missing private key parts',\n    };\n  }\n  const scheme = 'SF_JWT_PART_prod_3parts';\n\n  const b64 = parts.map((item) => String(item).replace(/\\s+/g, '')).join('');\n  const valid = validateBase64String(b64);\n  if (!valid.ok) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, key_b64_reason: valid.reason },\n      error: `Invalid base64 private key (${valid.reason})`,\n    };\n  }\n\n  let pem = '';\n  try {\n    pem = Buffer.from(b64, 'base64').toString('utf8');\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length },\n      error: `Key decode failed: ${safeStr(err && err.message)}`,\n    };\n  }\n\n  if (!pem.startsWith('-----BEGIN')) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_prefix: pem.slice(0, 20) },\n      error: 'Decoded key is not PEM',\n    };\n  }\n\n  try {\n    const keyObject = crypto.createPrivateKey(pem);\n    const fingerprint = crypto.createHash('sha256').update(pem).digest('hex').slice(0, 12);\n    return {\n      keyObject,\n      meta: { key_scheme: scheme, key_parts: parts.length, key_b64_len: b64.length, pem_len: pem.length, key_fp: fingerprint },\n      error: null,\n    };\n  } catch (err) {\n    httpStatuses.sfdc_key = 'INVALID';\n    return {\n      keyObject: null,\n      meta: { key_scheme: scheme, key_parts: parts.length, pem_len: pem.length },\n      error: `PEM parse failed: ${safeStr(err && err.message)}`,\n    };\n  }\n}\n\nfunction sfdcErrorSummary(status, data, text) {\n  if (Array.isArray(data)) {\n    return data\n      .filter((item) => item && typeof item === 'object')\n      .map((item) => {\n        const code = safeStr(item.errorCode);\n        const msg = safeStr(item.message);\n        if (code && msg) return `${code}: ${msg}`;\n        return msg;\n      })\n      .filter(Boolean)\n      .join('; ');\n  }\n  if (data && typeof data === 'object') {\n    const err = safeStr(data.error);\n    const desc = safeStr(data.error_description);\n    if (err && desc) return `${err}: ${desc}`;\n    if (safeStr(data.message)) return safeStr(data.message);\n  }\n  return safeStr(text) || `HTTP ${status}`;\n}\n\nasync function httpRequest({ method, url, headers, params, body, timeoutMs }) {\n  const target = new URL(url);\n  Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, String(value)));\n\n  if (typeof fetch === 'function') {\n    const controller = new AbortController();\n    const timer = setTimeout(() => controller.abort(), timeoutMs);\n    try {\n      const resp = await fetch(target.toString(), {\n        method,\n        headers: headers || {},\n        body,\n        signal: controller.signal,\n      });\n      const text = await resp.text();\n      let json = null;\n      try {\n        json = text ? JSON.parse(text) : null;\n      } catch (_err) {\n        json = null;\n      }\n      return { status: resp.status, text, json };\n    } finally {\n      clearTimeout(timer);\n    }\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(target, { method, headers: headers || {}, timeout: timeoutMs }, (res) => {\n      const chunks = [];\n      res.on('data', (chunk) => chunks.push(chunk));\n      res.on('end', () => {\n        const text = Buffer.concat(chunks).toString('utf8');\n        let json = null;\n        try {\n          json = text ? JSON.parse(text) : null;\n        } catch (_err) {\n          json = null;\n        }\n        resolve({ status: res.statusCode || 0, text, json });\n      });\n    });\n    req.on('timeout', () => req.destroy(new Error('timed_out')));\n    req.on('error', reject);\n    if (body) req.write(body);\n    req.end();\n  });\n}\n\nasync function callOnce(name, method, url, options) {\n  try {\n    const payload =\n      options.jsonBody != null ? Buffer.from(JSON.stringify(options.jsonBody), 'utf8') : options.dataBody != null ? Buffer.from(String(options.dataBody), 'utf8') : undefined;\n    const resp = await httpRequest({\n      method,\n      url,\n      headers: options.headers,\n      params: options.params,\n      body: payload,\n      timeoutMs: options.timeoutMs,\n    });\n    options.http[name] = resp.status || 'NO_RESP';\n    return { resp, err: null };\n  } catch (err) {\n    const message = safeStr(err && err.message);\n    options.http[name] = message === 'timed_out' || message.toLowerCase().includes('abort') ? 'Timed_out' : 'Request_error';\n    return { resp: null, err: message === 'timed_out' || message.toLowerCase().includes('abort') ? 'REQUEST -> Timeout' : `REQUEST -> ${message}` };\n  }\n}\n\nfunction sfdcBase(instanceUrl, apiVersion) {\n  return `${String(instanceUrl).replace(/\\/+$/, '')}/services/data/${apiVersion}`;\n}\n\nfunction sfdcHeaders(accessToken) {\n  return {\n    Authorization: `Bearer ${accessToken}`,\n    'Content-Type': 'application/json',\n    Accept: 'application/json',\n  };\n}\n\nasync function sfdcQueryOne({ instanceUrl, apiVersion, accessToken, soql, httpStatuses, name, timeoutMs }) {\n  const url = `${sfdcBase(instanceUrl, apiVersion)}/query`;\n  const { resp, err } = await callOnce(name, 'GET', url, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    params: { q: soql },\n    timeoutMs,\n  });\n  if (err || !resp) return { record: null, err: err || 'No response' };\n  if (resp.status !== 200) return { record: null, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n  const records = (resp.json && resp.json.records) || [];\n  return { record: records.length ? records[0] : null, err: null };\n}\n\nasync function getSalesforceAccessToken(httpStatuses) {\n  const loginUrl =\n    envFirst(['salesforce_login_url', 'SFDC_LOGIN_URL', 'SALESFORCE_LOGIN_URL', 'SF_LOGIN_AUD', 'SF_LOGIN_URL']) || DEFAULT_LOGIN_URL;\n  const aud = String(loginUrl).replace(/\\/+$/, '');\n  const clientId = envFirst(SF_PROD_CONSUMER_KEY_SECRET);\n  const username = SF_PROD_USERNAME;\n\n  if (!clientId) {\n    httpStatuses.sfdc_auth = 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer' }, err: `Missing ${SF_PROD_CONSUMER_KEY_SECRET}` };\n  }\n\n  const { keyObject, meta: keyMeta, error: keyErr } = getPrivateKeyFromSecrets(httpStatuses);\n  if (keyErr || !keyObject) {\n    httpStatuses.sfdc_auth = httpStatuses.sfdc_auth || 'NO_RESP';\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: keyErr || 'Missing private key' };\n  }\n\n  const assertion = buildJwt({ iss: clientId, sub: username, aud, expiresInSec: 180, keyObject });\n  const tokenUrl = `${aud}/services/oauth2/token`;\n  const body = new URLSearchParams({\n    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',\n    assertion,\n  }).toString();\n\n  const { resp, err } = await callOnce('sfdc_auth', 'POST', tokenUrl, {\n    http: httpStatuses,\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },\n    dataBody: body,\n    timeoutMs: 5000,\n  });\n  if (err || !resp) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: err || 'No response' };\n  if (resp.status !== 200) return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: sfdcErrorSummary(resp.status, resp.json, resp.text) };\n\n  const accessToken = safeStr(resp.json && resp.json.access_token);\n  const instanceUrl = safeStr(resp.json && resp.json.instance_url);\n  if (!accessToken || !instanceUrl) {\n    return { instanceUrl: null, accessToken: null, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: 'Token response missing access_token/instance_url' };\n  }\n  return { instanceUrl, accessToken, meta: { auth_method: 'jwt_bearer', ...keyMeta }, err: null };\n}\n\nfunction blankOutputs() {\n  return {\n    membership_id: '',\n    membership_status: '',\n    operation: '',\n    lock_error: 'false',\n    error: '',\n    error_message: '',\n    error_state: '1',\n    http: '{}',\n    http_message: '{}',\n    hs_delegate_id: '',\n    level: 'INFO',\n    log: '{}',\n    other: '{}',\n    salesforce_campaign_id: '',\n    salesforce_campaign_member_status: '',\n    salesforce_campaign_membership_id: '',\n    salesforcecontactid: '',\n    salesforceleadid: '',\n    email: '',\n    workflow_action: THIS_ACTION,\n    workflow_name: WORKFLOW_NAME,\n  };\n}\n\nfunction finalize(outputs, payload) {\n  const httpMessage = payload.httpMessage || deriveHttpMessage(payload.httpStatuses, {});\n  outputs.workflow_action = payload.actionName || THIS_ACTION;\n  outputs.workflow_name = payload.workflowName || WORKFLOW_NAME;\n  outputs.level = payload.level;\n  outputs.error_state = String(payload.errorState);\n  outputs.error_message = safeStr(payload.errorMessage || '');\n  outputs.http = jsonCompact(payload.httpStatuses);\n  outputs.http_message = jsonCompact(httpMessage);\n  outputs.other = jsonCompact(payload.otherPayload || {});\n\n  const logPayload = {\n    workflow_action: outputs.workflow_action,\n    level: outputs.level,\n    error_state: outputs.error_state,\n    workflow_name: outputs.workflow_name,\n    hs_delegate_id: outputs.hs_delegate_id,\n    salesforce_campaign_id: outputs.salesforce_campaign_id,\n    salesforce_campaign_membership_id: outputs.salesforce_campaign_membership_id,\n    membership_id: outputs.membership_id,\n    membership_status: outputs.membership_status,\n    salesforce_campaign_member_status: outputs.salesforce_campaign_member_status,\n    salesforcecontactid: outputs.salesforcecontactid,\n    salesforceleadid: outputs.salesforceleadid,\n    email: outputs.email,\n    error: { http: payload.httpStatuses, http_message: httpMessage },\n    operation: outputs.operation || safeStr(payload.otherPayload && payload.otherPayload.operation),\n    action_variant: ACTION_VARIANT,\n  };\n  if (payload.otherPayload && Object.prototype.hasOwnProperty.call(payload.otherPayload, 'lock_error')) {\n    logPayload.lock_error = payload.otherPayload.lock_error;\n  }\n  outputs.log = jsonCompact(logPayload);\n  return { outputFields: selectOutputFields(outputs) };\n}\n\nfunction isLockError(message) {\n  return String(message || '').includes('UNABLE_TO_LOCK_ROW');\n}\n\nasync function core(event) {\n  const inputs = (event && event.inputFields) || {};\n  const hsDelegateId = safeStr(inputs.hs_delegate_id);\n  const campaignId = safeStr(inputs.salesforce_campaign_id);\n  const registrationStatus = norm(inputs.registration_status);\n  const desiredStatus = desiredStatusFromRegistrationStatus(registrationStatus);\n  const membershipIdIn = safeStr(inputs.salesforce_campaign_membership_id);\n  const salesforcecontactid = safeStr(inputs.salesforcecontactid);\n  const salesforceleadid = safeStr(inputs.salesforceleadid);\n  const email = safeStr(inputs.email);\n\n  const outputs = blankOutputs();\n  outputs.hs_delegate_id = hsDelegateId;\n  outputs.salesforce_campaign_id = campaignId;\n  outputs.salesforce_campaign_member_status = desiredStatus;\n  outputs.salesforce_campaign_membership_id = membershipIdIn;\n  outputs.salesforcecontactid = salesforcecontactid;\n  outputs.salesforceleadid = salesforceleadid;\n  outputs.email = email;\n\n  const httpStatuses = {};\n  const otherPayload = {\n    operation: 'failed',\n    action_variant: ACTION_VARIANT,\n    auth_method: '',\n    api_version: sfdcApiVersion(),\n    registration_status: registrationStatus,\n    desired_status: desiredStatus,\n  };\n\n  const finish = (payload) => finalize(outputs, { ...payload, otherPayload });\n\n  if (!hsDelegateId) httpStatuses.input_hs_delegate_id = 'NO_RESP';\n  if (!desiredStatus) {\n    httpStatuses.input_registration_status = 'INVALID';\n  }\n  if (!membershipIdIn) httpStatuses.input_salesforce_campaign_membership_id = 'NO_RESP';\n  if (Object.keys(httpStatuses).length) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        input_registration_status: \"registration_status must be blank, 'confirmed', or 'attended'\",\n      }),\n      errorMessage: 'Missing or invalid inputs',\n    });\n  }\n\n  const { instanceUrl, accessToken, meta, err: authErr } = await getSalesforceAccessToken(httpStatuses);\n  Object.assign(otherPayload, meta || {});\n  otherPayload.auth_method = (meta && meta.auth_method) || '';\n  if (authErr || !instanceUrl || !accessToken) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_auth: authErr || 'Missing Salesforce auth' }),\n      errorMessage: 'Salesforce authentication failed',\n    });\n  }\n\n  const apiVersion = otherPayload.api_version;\n  outputs.membership_id = membershipIdIn;\n  const verified = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status, CampaignId, ContactId, LeadId FROM CampaignMember WHERE Id = '${membershipIdIn}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_verify',\n    timeoutMs: 4000,\n  });\n  if (verified.err || !verified.record) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_query_verify: verified.err || 'CampaignMember not found' }),\n      errorMessage: 'Unable to verify existing CampaignMember',\n    });\n  }\n\n  if (campaignId && safeStr(verified.record.CampaignId) && safeStr(verified.record.CampaignId) !== campaignId) {\n    httpStatuses.input_salesforce_campaign_id = 'INVALID';\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        input_salesforce_campaign_id: 'Existing CampaignMember does not match CampaignId',\n      }),\n      errorMessage: 'CampaignMember/Campaign mismatch',\n    });\n  }\n\n  if (!outputs.salesforcecontactid && verified.record.ContactId) outputs.salesforcecontactid = safeStr(verified.record.ContactId);\n  if (!outputs.salesforceleadid && verified.record.LeadId) outputs.salesforceleadid = safeStr(verified.record.LeadId);\n\n  outputs.membership_status = safeStr(verified.record.Status);\n  otherPayload.current_status = outputs.membership_status;\n  if (norm(outputs.membership_status) === norm(desiredStatus)) {\n    outputs.operation = 'skipped';\n    otherPayload.operation = 'skipped';\n    return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n  }\n\n  const patchResp = await callOnce('sfdc_patch_campaign_member', 'PATCH', `${sfdcBase(instanceUrl, apiVersion)}/sobjects/CampaignMember/${membershipIdIn}`, {\n    http: httpStatuses,\n    headers: sfdcHeaders(accessToken),\n    jsonBody: { Status: desiredStatus },\n    timeoutMs: 5000,\n  });\n  if (patchResp.err || !patchResp.resp || patchResp.resp.status !== 204) {\n    const override =\n      patchResp.err ||\n      sfdcErrorSummary(patchResp.resp ? patchResp.resp.status : 0, patchResp.resp ? patchResp.resp.json : null, patchResp.resp ? patchResp.resp.text : '');\n    if (isLockError(override)) {\n      outputs.lock_error = 'true';\n      outputs.operation = 'lock_error';\n      otherPayload.lock_error = true;\n      otherPayload.operation = 'lock_error';\n      return finish({\n        actionName: THIS_ACTION,\n        level: 'WARN',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { sfdc_patch_campaign_member: override }),\n        errorMessage: 'Salesforce PATCH retry failed with lock error',\n      });\n    }\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, { sfdc_patch_campaign_member: override }),\n      errorMessage: 'Salesforce PATCH retry failed',\n    });\n  }\n\n  const postPatch = await sfdcQueryOne({\n    instanceUrl,\n    apiVersion,\n    accessToken,\n    soql: `SELECT Id, Status FROM CampaignMember WHERE Id = '${membershipIdIn}' LIMIT 1`,\n    httpStatuses,\n    name: 'sfdc_query_verify_after_patch',\n    timeoutMs: 4000,\n  });\n  if (postPatch.err || !postPatch.record) {\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        sfdc_query_verify_after_patch: postPatch.err || 'No CampaignMember record',\n      }),\n      errorMessage: 'Unable to verify CampaignMember after PATCH retry',\n    });\n  }\n\n  outputs.membership_status = safeStr(postPatch.record.Status);\n  outputs.operation = 'patched';\n  otherPayload.operation = 'patched';\n  otherPayload.verified_status = outputs.membership_status;\n  if (norm(outputs.membership_status) !== norm(desiredStatus)) {\n    httpStatuses.sfdc_verify_status = 'INVALID';\n    return finish({\n      actionName: THIS_ACTION,\n      level: 'ERROR',\n      errorState: 1,\n      httpStatuses,\n      httpMessage: deriveHttpMessage(httpStatuses, {\n        sfdc_verify_status: `Status mismatch (wanted='${desiredStatus}', got='${outputs.membership_status}')`,\n      }),\n      errorMessage: 'CampaignMember status did not persist (likely invalid status for campaign)',\n    });\n  }\n\n  return finish({ actionName: THIS_ACTION, level: 'INFO', errorState: 0, httpStatuses });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    callback(await core(event || {}));\n  } catch (err) {\n    const outputs = blankOutputs();\n    const httpStatuses = { uncaught_exception: 'Request_error' };\n    callback(\n      finalize(outputs, {\n        actionName: THIS_ACTION,\n        level: 'ERROR',\n        errorState: 1,\n        httpStatuses,\n        httpMessage: deriveHttpMessage(httpStatuses, { uncaught_exception: safeStr(err && err.message ? err.message : err) }),\n        otherPayload: { operation: 'failed', action_variant: ACTION_VARIANT },\n        errorMessage: 'Unhandled exception in new_delegate_record_CCA4',\n      })\n    );\n  }\n};\n\nexports._internal = {\n  core,\n  getPrivateKeyFromSecrets,\n  getSalesforceAccessToken,\n  blankOutputs,\n  finalize,\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "hs_delegate_id",
+          "value": {
+            "propertyName": "hs_object_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_membership_id",
+          "value": {
+            "propertyName": "salesforce_campaign_membership_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforce_campaign_id",
+          "value": {
+            "propertyName": "salesforce_campaign_id",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforcecontactid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforcecontactid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "salesforceleadid",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_288430964.salesforceleadid }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "email",
+          "value": {
+            "propertyName": "email",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "registration_status",
+          "value": {
+            "propertyName": "registration_status",
+            "type": "OBJECT_PROPERTY"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "http",
+          "type": "STRING"
+        },
+        {
+          "name": "http_message",
+          "type": "STRING"
+        },
+        {
+          "name": "log",
+          "type": "STRING"
+        },
+        {
+          "name": "other",
+          "type": "STRING"
+        }
+      ],
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "8"
+      },
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "8",
+      "secretNames": [
+        "grafana_token",
+        "grafana_user"
+      ],
+      "sourceCode": "/*\n * Masks delegate workflow fields and ships a Grafana Loki log line for the preceding action result.\n * Branch before: Run after the preceding workflow action emits loggable fields for this delegate record path.\n * Branch after: Branch only on logger result: dry run, logged successfully, or logging error.\n * Expected inputs: upstream workflow fields via event.inputFields limited to log, http, http_message, and other.\n * Expected outputs: logged, simulated, payload (dry run only), logging_http_status, error.\n */\nconst https = require('https');\nconst { URL } = require('url');\n\nconst DEFAULT_ACTION = 'new_delegate_record_CCA4';\nconst WORKFLOW_NAME = 'Delegate New > New SFDC Campaign member';\nconst GRAFANA_ENV = 'prod';\nconst JOB_NAME = 'swoogo_sfdc_campaign';\nconst LOKI_ENDPOINT = (process.env.LOKI_URL || process.env.grafana_url || 'https://logs-prod-012.grafana.net/loki/api/v1/push').trim();\nconst EMAIL_RE = /([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})/g;\n\nfunction safeJsonParse(value, fallback) {\n  if (!value) return fallback;\n  if (typeof value === 'string') {\n    try {\n      const parsed = JSON.parse(value);\n      return parsed && typeof parsed === 'object' ? parsed : fallback;\n    } catch (_err) {\n      return fallback;\n    }\n  }\n  return typeof value === 'object' ? value : fallback;\n}\n\nfunction maskLocal(local) {\n  const value = String(local || '');\n  const first = value.charAt(0) || 'a';\n  const last = value.charAt(value.length - 1) || first;\n  return `${first}***${last}`;\n}\n\nfunction maskEmailString(value) {\n  return String(value || '').replace(EMAIL_RE, (_match, local, domain) => `${maskLocal(local)}@${domain}`);\n}\n\nfunction maskDeep(value) {\n  if (Array.isArray(value)) return value.map((item) => maskDeep(item));\n  if (value && typeof value === 'object') {\n    return Object.keys(value).reduce((acc, key) => {\n      acc[key] = maskDeep(value[key]);\n      return acc;\n    }, {});\n  }\n  if (typeof value === 'string') return maskEmailString(value);\n  return value;\n}\n\nfunction buildLogLine(inputs) {\n  const parsedLog = safeJsonParse(inputs.log, {});\n  const payload = {\n    workflow_action: parsedLog.workflow_action || inputs.workflow_action || DEFAULT_ACTION,\n    workflow_name: parsedLog.workflow_name || inputs.workflow_name || WORKFLOW_NAME,\n    level: parsedLog.level || inputs.level || 'INFO',\n    error_state: parsedLog.error_state || inputs.error_state || '0',\n    hs_delegate_id: parsedLog.hs_delegate_id || inputs.hs_delegate_id || '',\n    salesforce_campaign_id: parsedLog.salesforce_campaign_id || inputs.salesforce_campaign_id || '',\n    salesforce_campaign_membership_id:\n      parsedLog.salesforce_campaign_membership_id || inputs.salesforce_campaign_membership_id || '',\n    membership_id: parsedLog.membership_id || inputs.membership_id || '',\n    membership_status: parsedLog.membership_status || inputs.membership_status || '',\n    salesforce_campaign_member_status:\n      parsedLog.salesforce_campaign_member_status || inputs.salesforce_campaign_member_status || '',\n    salesforcecontactid: parsedLog.salesforcecontactid || inputs.salesforcecontactid || '',\n    salesforceleadid: parsedLog.salesforceleadid || inputs.salesforceleadid || '',\n    email: parsedLog.email || inputs.email || '',\n    error: {\n      http: (parsedLog.error && parsedLog.error.http) || safeJsonParse(inputs.http, {}),\n      http_message: (parsedLog.error && parsedLog.error.http_message) || safeJsonParse(inputs.http_message, {}),\n    },\n    other: safeJsonParse(inputs.other, parsedLog.other || {}),\n  };\n  payload.campaign_member_id = payload.membership_id || payload.salesforce_campaign_membership_id || '';\n  if (parsedLog.operation || payload.other.operation) payload.operation = parsedLog.operation || payload.other.operation;\n  if (parsedLog.action_variant || payload.other.action_variant) payload.action_variant = parsedLog.action_variant || payload.other.action_variant;\n  if (payload.other.lock_error !== undefined) payload.lock_error = payload.other.lock_error;\n  return JSON.stringify(maskDeep(payload));\n}\n\nasync function postJson(url, payload, user, token) {\n  const target = new URL(url);\n  const body = JSON.stringify(payload);\n  const auth = `Basic ${Buffer.from(`${user}:${token}`).toString('base64')}`;\n\n  if (typeof fetch === 'function') {\n    const resp = await fetch(target.toString(), {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', Authorization: auth },\n      body,\n    });\n    const text = await resp.text();\n    if (resp.status < 200 || resp.status >= 300) throw new Error(text || `HTTP ${resp.status}`);\n    return { status: resp.status };\n  }\n\n  return new Promise((resolve, reject) => {\n    const req = https.request(\n      target,\n      {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          'Content-Length': Buffer.byteLength(body),\n          Authorization: auth,\n        },\n      },\n      (res) => {\n        const chunks = [];\n        res.on('data', (chunk) => chunks.push(chunk));\n        res.on('end', () => {\n          const text = Buffer.concat(chunks).toString('utf8');\n          if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {\n            reject(new Error(text || `HTTP ${res.statusCode || 0}`));\n            return;\n          }\n          resolve({ status: res.statusCode || 0 });\n        });\n      }\n    );\n    req.on('error', reject);\n    req.write(body);\n    req.end();\n  });\n}\n\nexports.main = async (event, callback) => {\n  try {\n    const user = (process.env.grafana_user || process.env.GRAFANA_USER || '').trim();\n    const token = (process.env.grafana_token || process.env.GRAFANA_TOKEN || '').trim();\n    if (!user || !token) throw new Error('Missing grafana_user or grafana_token environment variables.');\n\n    const payload = {\n      streams: [\n        {\n          stream: {\n            service_name: 'hubspot',\n            environment: GRAFANA_ENV,\n            process: 'workflow',\n            team: 'marketing_technology',\n            job: JOB_NAME,\n          },\n          values: [[`${Date.now()}000000`, buildLogLine((event && event.inputFields) || {})]],\n        },\n      ],\n    };\n\n    if (String(process.env.GRAFANA_DRY_RUN || '').trim() === '1') {\n      callback({ outputFields: { logged: false, simulated: true, payload } });\n      return;\n    }\n\n    const res = await postJson(LOKI_ENDPOINT, payload, user, token);\n    callback({ outputFields: { logged: true, simulated: false, logging_http_status: res.status } });\n  } catch (error) {\n    callback({\n      outputFields: {\n        logged: false,\n        error: String(error && error.message ? error.message : error),\n      },\n    });\n  }\n};\n",
+      "runtime": "NODE20X",
+      "inputFields": [
+        {
+          "name": "log",
+          "value": {
+            "actionId": "7",
+            "dataKey": "log",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http",
+          "value": {
+            "actionId": "7",
+            "dataKey": "http",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "http_message",
+          "value": {
+            "actionId": "7",
+            "dataKey": "http_message",
+            "type": "FIELD_DATA"
+          }
+        },
+        {
+          "name": "other",
+          "value": {
+            "actionId": "7",
+            "dataKey": "other",
+            "type": "FIELD_DATA"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "error",
+          "type": "STRING"
+        },
+        {
+          "name": "logged",
+          "type": "STRING"
+        },
+        {
+          "name": "logging_http_status",
+          "type": "STRING"
+        },
+        {
+          "name": "payload",
+          "type": "STRING"
+        },
+        {
+          "name": "simulated",
+          "type": "STRING"
+        }
+      ],
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "9",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "16"
+      },
+      "fields": {
+        "delta": "10",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "10",
+      "inputValue": {
+        "actionId": "1",
+        "dataKey": "m_id_known",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "12"
+          }
+        },
+        {
+          "branchValue": "no",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "14"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "11",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-5",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "13"
+      },
+      "fields": {
+        "property_name": "salesforce_campaign_membership_id",
+        "value": {
+          "staticValue": "{{ action_outputs.action_output_1.membership_id }}",
+          "type": "STATIC_VALUE"
+        }
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "12",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-5",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "11"
+      },
+      "fields": {
+        "property_name": "salesforce_campaign_member_status",
+        "value": {
+          "staticValue": "{{ action_outputs.action_output_1.m_id_status }}",
+          "type": "STATIC_VALUE"
+        }
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "13",
+      "inputValue": {
+        "actionId": "1",
+        "dataKey": "operation",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "found_needs_patch",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "3"
+          }
+        },
+        {
+          "branchValue": "found_needs_patch"
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "14",
+      "inputValue": {
+        "actionId": "1",
+        "dataKey": "lock_error",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "true",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "5"
+          }
+        }
+      ],
+      "defaultBranch": {
+        "edgeType": "STANDARD",
+        "nextActionId": "15"
+      },
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "15",
+      "inputValue": {
+        "actionId": "1",
+        "dataKey": "operation",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "found_needs_patch",
+          "connection": {
+            "edgeType": "GOTO",
+            "nextActionId": "3"
+          }
+        },
+        {
+          "branchValue": "created"
+        },
+        {
+          "branchValue": "skipped"
+        }
+      ],
+      "defaultBranch": {
+        "edgeType": "STANDARD",
+        "nextActionId": "7"
+      },
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "16",
+      "listBranches": [
+        {
+          "filterBranch": {
+            "filterBranches": [
+              {
+                "filterBranches": [],
+                "filters": [
+                  {
+                    "property": "salesforce_campaign_id",
+                    "operation": {
+                      "operator": "IS_KNOWN",
+                      "includeObjectsWithNoValueSet": false,
+                      "operationType": "ALL_PROPERTY"
+                    },
+                    "filterType": "PROPERTY"
+                  },
+                  {
+                    "property": "registration_status",
+                    "operation": {
+                      "operator": "IS_EQUAL_TO",
+                      "includeObjectsWithNoValueSet": false,
+                      "values": [
+                        "Confirmed",
+                        "confirmed",
+                        "attended",
+                        "Attended"
+                      ],
+                      "operationType": "MULTISTRING"
+                    },
+                    "filterType": "PROPERTY"
+                  },
+                  {
+                    "property": "reg_type_name",
+                    "operation": {
+                      "operator": "DOES_NOT_CONTAIN",
+                      "includeObjectsWithNoValueSet": true,
+                      "values": [
+                        "speaker",
+                        " staff",
+                        " partner",
+                        " av team",
+                        "test"
+                      ],
+                      "operationType": "MULTISTRING"
+                    },
+                    "filterType": "PROPERTY"
+                  }
+                ],
+                "filterBranchType": "AND",
+                "filterBranchOperator": "AND"
+              }
+            ],
+            "filters": [],
+            "filterBranchType": "OR",
+            "filterBranchOperator": "OR"
+          },
+          "branchName": "Meets criteria",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "1"
+          }
+        }
+      ],
+      "type": "LIST_BRANCH"
+    }
+  ],
+  "enrollmentCriteria": {
+    "shouldReEnroll": true,
+    "eventFilterBranches": [
+      {
+        "filterBranches": [],
+        "filters": [
+          {
+            "property": "hs_name",
+            "operation": {
+              "operator": "IS_EQUAL_TO",
+              "includeObjectsWithNoValueSet": false,
+              "value": "registration_status",
+              "operationType": "STRING"
+            },
+            "filterType": "PROPERTY"
+          },
+          {
+            "property": "hs_value",
+            "operation": {
+              "operator": "IS_KNOWN",
+              "includeObjectsWithNoValueSet": false,
+              "operationType": "ALL_PROPERTY"
+            },
+            "filterType": "PROPERTY"
+          }
+        ],
+        "eventTypeId": "4-655002",
+        "operator": "HAS_COMPLETED",
+        "filterBranchType": "UNIFIED_EVENTS",
+        "filterBranchOperator": "AND"
+      },
+      {
+        "filterBranches": [],
+        "filters": [],
+        "eventTypeId": "4-1463224",
+        "operator": "HAS_COMPLETED",
+        "filterBranchType": "UNIFIED_EVENTS",
+        "filterBranchOperator": "AND"
+      }
+    ],
+    "listMembershipFilterBranches": [],
+    "type": "EVENT_BASED"
+  },
+  "timeWindows": [],
+  "blockedDates": [],
+  "customProperties": {
+    "workflow_type": "indefinite",
+    "purpose": "Salesforce"
+  },
+  "dataSources": [
+    {
+      "name": "fetched_object_186775092",
+      "objectTypeId": "0-1",
+      "associationTypeId": 69,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    },
+    {
+      "name": "fetched_object_288430964",
+      "objectTypeId": "0-1",
+      "associationTypeId": 209,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    }
+  ],
+  "crmObjectCreationStatus": "COMPLETE",
+  "type": "PLATFORM_FLOW"
+}

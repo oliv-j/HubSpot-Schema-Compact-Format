@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/hscf/schemas/hscf-options-v1.schema.json",
+  "title": "HSCF v1 option sidecar",
+  "type": "object",
+  "required": ["v", "kind", "object", "property", "ek", "o", "raw"],
+  "properties": {
+    "v": {"const": "hscf-1"},
+    "kind": {"const": "hscf_option_set"},
+    "object": {"type": "string"},
+    "property": {"type": "string"},
+    "ek": {"type": "array", "items": {"type": "string"}},
+    "o": {"type": "array", "items": {"type": "array"}},
+    "raw": {
+      "type": "object",
+      "required": ["sourceHash"],
+      "properties": {
+        "sourceHash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

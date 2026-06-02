@@ -1,0 +1,203 @@
+{
+  "ok": true,
+  "source": "hubspot",
+  "portal": "example",
+  "command": "schemas.get",
+  "object": "contacts",
+  "result": {
+    "labels": {
+      "singular": "Contact",
+      "plural": "Contacts"
+    },
+    "requiredProperties": [
+      "email"
+    ],
+    "searchableProperties": [
+      "firstname",
+      "lastname",
+      "email"
+    ],
+    "primaryDisplayProperty": "email",
+    "secondaryDisplayProperties": [
+      "firstname",
+      "lastname"
+    ],
+    "description": "Synthetic contact schema for HSCF tests.",
+    "allowsSensitiveProperties": true,
+    "archived": false,
+    "restorable": true,
+    "metaType": "HUBSPOT",
+    "id": "1",
+    "fullyQualifiedName": "CONTACT",
+    "createdAt": "1970-01-01T00:00:00Z",
+    "updatedAt": "2026-01-01T00:00:00Z",
+    "createdByUserId": null,
+    "updatedByUserId": null,
+    "objectTypeId": "0-1",
+    "properties": [
+      {
+        "name": "email",
+        "label": "Email",
+        "type": "string",
+        "fieldType": "text",
+        "description": "Contact email address.",
+        "groupName": "contactinformation",
+        "options": [],
+        "displayOrder": 0,
+        "calculated": false,
+        "externalOptions": false,
+        "archived": false,
+        "hasUniqueValue": true,
+        "hidden": false,
+        "hubspotDefined": true,
+        "modificationMetadata": {
+          "archivable": true,
+          "readOnlyDefinition": true,
+          "readOnlyValue": false
+        },
+        "formField": true,
+        "dataSensitivity": "non_sensitive"
+      },
+      {
+        "name": "firstname",
+        "label": "First name",
+        "type": "string",
+        "fieldType": "text",
+        "description": "First name.",
+        "groupName": "contactinformation",
+        "options": [],
+        "displayOrder": 1,
+        "calculated": false,
+        "externalOptions": false,
+        "archived": false,
+        "hasUniqueValue": false,
+        "hidden": false,
+        "hubspotDefined": true,
+        "modificationMetadata": {
+          "archivable": true,
+          "readOnlyDefinition": true,
+          "readOnlyValue": false
+        },
+        "formField": true,
+        "dataSensitivity": "non_sensitive"
+      },
+      {
+        "name": "lifecyclestage",
+        "label": "Lifecycle stage",
+        "type": "enumeration",
+        "fieldType": "select",
+        "description": "Example small enum.",
+        "groupName": "contactinformation",
+        "options": [
+          {"label": "Subscriber", "value": "subscriber", "description": "", "displayOrder": 0, "hidden": false},
+          {"label": "Lead", "value": "lead", "description": "", "displayOrder": 1, "hidden": false},
+          {"label": "Customer", "value": "customer", "description": "", "displayOrder": 2, "hidden": false}
+        ],
+        "displayOrder": 2,
+        "calculated": false,
+        "externalOptions": false,
+        "archived": false,
+        "hasUniqueValue": false,
+        "hidden": false,
+        "modificationMetadata": {
+          "archivable": true,
+          "readOnlyDefinition": false,
+          "readOnlyValue": false
+        },
+        "formField": true,
+        "dataSensitivity": "non_sensitive"
+      },
+      {
+        "name": "example_region",
+        "label": "Example region",
+        "type": "enumeration",
+        "fieldType": "select",
+        "description": "Example large enum that should become a sidecar.",
+        "groupName": "contactinformation",
+        "options": [
+          {"label": "Region 01", "value": "region_01", "description": "", "displayOrder": 1, "hidden": false},
+          {"label": "Region 02", "value": "region_02", "description": "", "displayOrder": 2, "hidden": false},
+          {"label": "Region 03", "value": "region_03", "description": "", "displayOrder": 3, "hidden": false},
+          {"label": "Region 04", "value": "region_04", "description": "", "displayOrder": 4, "hidden": false},
+          {"label": "Region 05", "value": "region_05", "description": "", "displayOrder": 5, "hidden": false},
+          {"label": "Region 06", "value": "region_06", "description": "", "displayOrder": 6, "hidden": false},
+          {"label": "Region 07", "value": "region_07", "description": "", "displayOrder": 7, "hidden": false},
+          {"label": "Region 08", "value": "region_08", "description": "", "displayOrder": 8, "hidden": false},
+          {"label": "Region 09", "value": "region_09", "description": "", "displayOrder": 9, "hidden": false},
+          {"label": "Region 10", "value": "region_10", "description": "", "displayOrder": 10, "hidden": false},
+          {"label": "Region 11", "value": "region_11", "description": "", "displayOrder": 11, "hidden": false},
+          {"label": "Region 12", "value": "region_12", "description": "", "displayOrder": 12, "hidden": false},
+          {"label": "Region 13", "value": "region_13", "description": "", "displayOrder": 13, "hidden": false},
+          {"label": "Region 14", "value": "region_14", "description": "", "displayOrder": 14, "hidden": false},
+          {"label": "Region 15", "value": "region_15", "description": "", "displayOrder": 15, "hidden": false},
+          {"label": "Region 16", "value": "region_16", "description": "", "displayOrder": 16, "hidden": false},
+          {"label": "Region 17", "value": "region_17", "description": "", "displayOrder": 17, "hidden": false},
+          {"label": "Region 18", "value": "region_18", "description": "", "displayOrder": 18, "hidden": false},
+          {"label": "Region 19", "value": "region_19", "description": "", "displayOrder": 19, "hidden": false},
+          {"label": "Region 20", "value": "region_20", "description": "", "displayOrder": 20, "hidden": false},
+          {"label": "Region 21", "value": "region_21", "description": "", "displayOrder": 21, "hidden": false},
+          {"label": "Region 22", "value": "region_22", "description": "", "displayOrder": 22, "hidden": false},
+          {"label": "Region 23", "value": "region_23", "description": "", "displayOrder": 23, "hidden": false},
+          {"label": "Region 24", "value": "region_24", "description": "", "displayOrder": 24, "hidden": false},
+          {"label": "Region 25", "value": "region_25", "description": "", "displayOrder": 25, "hidden": false},
+          {"label": "Region 26", "value": "region_26", "description": "", "displayOrder": 26, "hidden": false}
+        ],
+        "displayOrder": 3,
+        "calculated": false,
+        "externalOptions": false,
+        "archived": false,
+        "hasUniqueValue": false,
+        "hidden": false,
+        "modificationMetadata": {
+          "archivable": true,
+          "readOnlyDefinition": false,
+          "readOnlyValue": false
+        },
+        "formField": true,
+        "dataSensitivity": "non_sensitive",
+        "futureHubSpotKey": "preserve me"
+      },
+      {
+        "name": "hs_calculated_example",
+        "label": "Calculated example",
+        "type": "string",
+        "fieldType": "text",
+        "description": "Synthetic read-only calculated property.",
+        "groupName": "analytics",
+        "options": [],
+        "displayOrder": 4,
+        "calculated": true,
+        "externalOptions": false,
+        "archived": false,
+        "hasUniqueValue": false,
+        "hidden": true,
+        "hubspotDefined": true,
+        "modificationMetadata": {
+          "archivable": true,
+          "readOnlyDefinition": true,
+          "readOnlyValue": true,
+          "readOnlyOptions": true
+        },
+        "formField": false,
+        "dataSensitivity": "non_sensitive"
+      }
+    ],
+    "associations": [
+      {
+        "fromObjectTypeId": "0-1",
+        "toObjectTypeId": "0-2",
+        "name": "contact_to_company",
+        "cardinality": "ONE_TO_MANY",
+        "inverseCardinality": "ONE_TO_MANY",
+        "hasUserEnforcedMaxToObjectIds": false,
+        "hasUserEnforcedMaxFromObjectIds": false,
+        "maxToObjectIds": 1,
+        "maxFromObjectIds": 500000,
+        "id": "1",
+        "createdAt": null,
+        "updatedAt": null
+      }
+    ],
+    "name": "contacts"
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "id": "1743507592",
+  "isEnabled": true,
+  "objectTypeId": "2-34637667",
+  "flowType": "WORKFLOW",
+  "revisionId": "18",
+  "name": "Webinar Q&A Sales Ready",
+  "uuid": "Webinar Q&A Sales Ready-1743507592",
+  "createdAt": "2025-12-16T14:46:46.410Z",
+  "updatedAt": "2026-04-10T10:39:42.106Z",
+  "startActionId": "1",
+  "nextAvailableActionId": "5",
+  "actions": [
+    {
+      "actionId": "1",
+      "actionTypeVersion": 11,
+      "actionTypeId": "0-172351286",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "4"
+      },
+      "fields": {
+        "message": "Deeply read the information provided by the customer in: {{ enrolled_object.q_a_questions }}\n\nInstruction:\nYou are classifying the intent of a customer question submitted during a webinar.\nQuestions may be messy, multi-part, or poorly written.\nYour job is to return exactly one category that best describes the strongest intent signal.\n\n🎯 CATEGORIES (9 total)\n1. Readiness Intent (Sales-Ready)\n\nCustomer expresses active purchasing or implementation intent.\nSignals include:\n\nAsking how to order\n\nAsking for a sales contact\n\nRequesting a quote\n\nRequesting commercial pricing with intent to buy\n\nExpressing that they plan to implement and need guidance\n\n“We want to purchase…”\n\n“Who do I speak to about ordering?”\n\n2. Pre-Qualification Intent (Evaluation)\n\nCustomer is evaluating feasibility, budgeting, or practical fit.\nSignals include:\n\nCost per sample / run\n\nThroughput / run time\n\nCompatibility with sample types\n\nKit comparisons\n\nWorkflow fit questions\n\n“Can this work in our setup?”\n\nTechnical-in-context-of-evaluation questions\n\nThese come from people who might buy, but are not declaring intent.\n\n3. General Commercial Interest (Price Curiosity)\n\nCustomer asks about product pricing without any indication of intent to buy.\nSignals include:\n\n“How much does a flow cell cost?”\n\n“What’s the price of a MinION?”\n\nPurely informational price requests\n\nNo request for ordering, quoting, or sales contact\n\n4. Strategic Intent (Future Planning)\n\nCustomer discusses organisational or long-term planning.\nSignals include:\n\n“We’re planning to expand sequencing capacity next year.”\n\n“We’re evaluating long reads for a future workflow.”\n\n“We’re setting up a genomics core.”\n\nNot a lead today, but meaningful for BD or nurturing.\n\n5. Technical Questions (Support)\n\nPurely technical or scientific questions.\nSignals include:\n\nSample prep\n\nChemistry\n\nProtocol steps\n\nTroubleshooting\n\n“Can we use tissue samples?”\n\n“How many reads do I need?”\n\nThese do not indicate buying intent.\n\n6. Content Requests (Slides / On-Demand)\n\nSignals include:\n\n“Will you share the slides?”\n\n“Can I get the recording?”\n\n7. Technical Difficulties (Can't Connect)\n\nSignals include:\n\n“No audio”\n\n“I can’t see the slides”\n\n“Link not working”\n\n8. Pleasantries\n\nSignals include:\n\n“Hi”\n\n“Thanks!”\n\n“Great talk!”\n\nGreetings or gratitude only\n\n9. Spam / Nonsense / Unintelligible\n\nSignals include:\n\nGibberish\n\nOff-topic\n\nAdvertising\n\nBroken or meaningless text\n\nExtremely short with no content (“q wen Q3”)\n\n🧠 PRIORITY RULES (very important)\n\nIf multiple types of content appear in a single message, classify using this ranking:\n\nSpam / Nonsense\n\nReadiness Intent (sales-ready)\n\nPre-Qualification Intent (evaluation)\n\nGeneral Commercial Interest\n\nStrategic Intent\n\nTechnical Questions\n\nContent Requests\n\nTechnical Difficulties\n\nPleasantries\n\n\n\nExample:\n“Can I order reagents? Also, can we reuse flow cells?”\n→ Readiness Intent (highest priority)\n\nExample:\n“What’s the price of a MinION, and can I get the slides?”\n→ General Commercial Interest\n\n📤 OUTPUT FORMAT\n\nReturn a JSON object:\n\n{\n  \"category\": \"One of the 9 category names exactly as written\",\n  \"response\": \"Short explanation of why you classified it this way.\"\n}\n\n🧪 EXAMPLES\nInput:\n\n“Who do I speak to in order to order flow cells?”\n\n→\n\n{ \n  \"category\": \"Readiness Intent\",\n  \"response\": \"The customer is asking how to order a product.\"\n}\n\nInput:\n\n“How much does a MinION cost?”\n\n→\n\n{\n  \"category\": \"General Commercial Interest\",\n  \"response\": \"They request price information without asking to buy.\"\n}\n\nInput:\n\n“Can we use the ligation kit for tissue samples? Also what’s the cost per sample?”\n\n→\n\n{\n  \"category\": \"Pre-Qualification Intent\",\n  \"response\": \"They are evaluating feasibility and budgeting, not asking to purchase.\"\n}\n\nInput:\n\n“Will we get the slides afterward?”\n\n→\n\n{\n  \"category\": \"Content Requests\",\n  \"response\": \"Direct request for webinar materials.\"\n}\n\nInput:\n\n“q wen Q3”\n\n→\n\n{\n  \"category\": \"Spam / Nonsense\",\n  \"response\": \"Text is unintelligible and does not express any meaningful intent.\"\n}\n"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "4",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-5",
+      "fields": {
+        "property_name": "sales_qa_type_question",
+        "value": {
+          "staticValue": "{{ action_outputs.action_output_1.category }}",
+          "type": "STATIC_VALUE"
+        }
+      },
+      "type": "SINGLE_CONNECTION"
+    }
+  ],
+  "enrollmentCriteria": {
+    "shouldReEnroll": true,
+    "eventFilterBranches": [
+      {
+        "filterBranches": [],
+        "filters": [
+          {
+            "property": "hs_name",
+            "operation": {
+              "operator": "IS_EQUAL_TO",
+              "includeObjectsWithNoValueSet": false,
+              "value": "q_a_questions",
+              "operationType": "STRING"
+            },
+            "filterType": "PROPERTY"
+          },
+          {
+            "property": "hs_value",
+            "operation": {
+              "operator": "IS_KNOWN",
+              "includeObjectsWithNoValueSet": false,
+              "operationType": "ALL_PROPERTY"
+            },
+            "filterType": "PROPERTY"
+          }
+        ],
+        "eventTypeId": "4-655002",
+        "operator": "HAS_COMPLETED",
+        "filterBranchType": "UNIFIED_EVENTS",
+        "filterBranchOperator": "AND"
+      }
+    ],
+    "listMembershipFilterBranches": [],
+    "type": "EVENT_BASED"
+  },
+  "timeWindows": [],
+  "blockedDates": [],
+  "customProperties": {
+    "purpose": "Data Management / Cleaning",
+    "workflow_type": "indefinite"
+  },
+  "dataSources": [
+    {
+      "name": "fetched_object_186775092",
+      "objectTypeId": "0-1",
+      "associationTypeId": 69,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    },
+    {
+      "name": "fetched_object_288430964",
+      "objectTypeId": "0-1",
+      "associationTypeId": 209,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    }
+  ],
+  "crmObjectCreationStatus": "COMPLETE",
+  "type": "PLATFORM_FLOW"
+}

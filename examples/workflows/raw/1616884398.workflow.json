@@ -1,0 +1,1033 @@
+{
+  "id": "1616884398",
+  "isEnabled": true,
+  "flowType": "WORKFLOW",
+  "revisionId": "108",
+  "name": "New Lead Awareness Email Nurture Sender",
+  "description": "Miro Board for more details: https://miro.com/app/board/uXjVLRibGjI=/?share_link_id=305363745592",
+  "uuid": "DRAFT New Lead Awareness Email Nurture Sender-1616884398",
+  "createdAt": "2024-12-18T10:59:39.905Z",
+  "updatedAt": "2026-05-14T14:00:14.911Z",
+  "startActionId": "135",
+  "nextAvailableActionId": "147",
+  "actions": [
+    {
+      "actionId": "30",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "34"
+      },
+      "fields": {
+        "content_id": "186579717408"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "31",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "30"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "32",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "33"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "33",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "36"
+      },
+      "fields": {
+        "content_id": "186579717653"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "34",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "32"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "36",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "101"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "37",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "39"
+      },
+      "fields": {
+        "content_id": "186579718195"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "38",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "40"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "39",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "38"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "40",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "42"
+      },
+      "fields": {
+        "content_id": "186579718469"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "42",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "102"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "43",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "106"
+      },
+      "fields": {
+        "content_id": "186582252049"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "86",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "90"
+      },
+      "fields": {
+        "content_id": "184086140047"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "87",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "86"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "88",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "89"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "89",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "92"
+      },
+      "fields": {
+        "content_id": "184033285523"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "90",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "88"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "91",
+      "listBranches": [
+        {
+          "filterBranch": {
+            "filterBranches": [
+              {
+                "filterBranches": [],
+                "filters": [
+                  {
+                    "property": "ont_and_distribution_partners_consent",
+                    "operation": {
+                      "operator": "IS_ANY_OF",
+                      "includeObjectsWithNoValueSet": false,
+                      "values": [
+                        "Yes"
+                      ],
+                      "operationType": "ENUMERATION"
+                    },
+                    "filterType": "PROPERTY"
+                  }
+                ],
+                "filterBranchType": "AND",
+                "filterBranchOperator": "AND"
+              }
+            ],
+            "filters": [],
+            "filterBranchType": "OR",
+            "filterBranchOperator": "OR"
+          },
+          "branchName": "Opt-In Check",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "93"
+          }
+        }
+      ],
+      "type": "LIST_BRANCH"
+    },
+    {
+      "actionId": "92",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "91"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "93",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "95"
+      },
+      "fields": {
+        "content_id": "185027299482"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "94",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "96"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "95",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "94"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "96",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "98"
+      },
+      "fields": {
+        "content_id": "184042432620"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "97",
+      "listBranches": [
+        {
+          "filterBranch": {
+            "filterBranches": [
+              {
+                "filterBranches": [],
+                "filters": [
+                  {
+                    "property": "ont_and_distribution_partners_consent",
+                    "operation": {
+                      "operator": "IS_ANY_OF",
+                      "includeObjectsWithNoValueSet": false,
+                      "values": [
+                        "Yes"
+                      ],
+                      "operationType": "ENUMERATION"
+                    },
+                    "filterType": "PROPERTY"
+                  }
+                ],
+                "filterBranchType": "AND",
+                "filterBranchOperator": "AND"
+              }
+            ],
+            "filters": [],
+            "filterBranchType": "OR",
+            "filterBranchOperator": "OR"
+          },
+          "branchName": "Opt-In Check",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "99"
+          }
+        }
+      ],
+      "type": "LIST_BRANCH"
+    },
+    {
+      "actionId": "98",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "97"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "99",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "103"
+      },
+      "fields": {
+        "content_id": "184086464909"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "100",
+      "testBranches": [
+        {
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "87"
+          }
+        },
+        {
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "31"
+          }
+        }
+      ],
+      "type": "AB_TEST_BRANCH"
+    },
+    {
+      "actionId": "101",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "37"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "102",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "43"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "103",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "104"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "104",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "105"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "105",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "125"
+      },
+      "fields": {
+        "content_id": "184205174057"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "106",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "107"
+      },
+      "fields": {
+        "delta": "10080",
+        "time_unit": "MINUTES"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "107",
+      "inputValue": {
+        "propertyName": "ont_and_distribution_partners_consent",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "Yes",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "108"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "108",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-4",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "128"
+      },
+      "fields": {
+        "content_id": "186582217008"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "125",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-29",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "126"
+      },
+      "fields": {
+        "event_filter_branches": [
+          {
+            "filterBranches": [],
+            "filters": [
+              {
+                "property": "hs_email_campaign_group_id",
+                "operation": {
+                  "operator": "IS_ANY_OF",
+                  "includeObjectsWithNoValueSet": false,
+                  "values": [
+                    "348778920",
+                    "348180040"
+                  ],
+                  "operationType": "ENUMERATION"
+                },
+                "filterType": "PROPERTY"
+              }
+            ],
+            "eventTypeId": "4-666440",
+            "operator": "HAS_COMPLETED",
+            "filterBranchType": "UNIFIED_EVENTS",
+            "filterBranchOperator": "AND"
+          }
+        ],
+        "expiration_minutes": "20160"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "126",
+      "inputValue": {
+        "actionId": "125",
+        "dataKey": "hs_event_criteria_met",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "true",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "127"
+          }
+        }
+      ],
+      "defaultBranchName": "Event criteria not met",
+      "defaultBranch": {
+        "edgeType": "GOTO",
+        "nextActionId": "141"
+      },
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "127",
+      "actionTypeVersion": 5,
+      "actionTypeId": "0-63809083",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "141"
+      },
+      "fields": {
+        "listId": "23503",
+        "targetObject": "{{ enrolled_object }}"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "128",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-29",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "129"
+      },
+      "fields": {
+        "event_filter_branches": [
+          {
+            "filterBranches": [],
+            "filters": [
+              {
+                "property": "hs_email_campaign_group_id",
+                "operation": {
+                  "operator": "IS_ANY_OF",
+                  "includeObjectsWithNoValueSet": false,
+                  "values": [
+                    "348778920",
+                    "348180040"
+                  ],
+                  "operationType": "ENUMERATION"
+                },
+                "filterType": "PROPERTY"
+              }
+            ],
+            "eventTypeId": "4-666440",
+            "operator": "HAS_COMPLETED",
+            "filterBranchType": "UNIFIED_EVENTS",
+            "filterBranchOperator": "AND"
+          }
+        ],
+        "expiration_minutes": "20160"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "129",
+      "inputValue": {
+        "actionId": "128",
+        "dataKey": "hs_event_criteria_met",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "true",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "130"
+          }
+        }
+      ],
+      "defaultBranchName": "Event criteria not met",
+      "defaultBranch": {
+        "edgeType": "GOTO",
+        "nextActionId": "138"
+      },
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "130",
+      "actionTypeVersion": 5,
+      "actionTypeId": "0-63809083",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "138"
+      },
+      "fields": {
+        "listId": "23503",
+        "targetObject": "{{ enrolled_object }}"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "134",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-1",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "100"
+      },
+      "fields": {
+        "delta": "0",
+        "time_unit": "DAYS",
+        "days_of_week": [
+          "TUESDAY"
+        ]
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "135",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-5",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "134"
+      },
+      "fields": {
+        "property_name": "nurture_entry_engagement_score_stamp",
+        "value": {
+          "propertyName": "china_apac_engagement",
+          "type": "OBJECT_PROPERTY"
+        }
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "138",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-29",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "139"
+      },
+      "fields": {
+        "event_filter_branches": [
+          {
+            "filterBranches": [],
+            "filters": [
+              {
+                "property": "hs_name",
+                "operation": {
+                  "operator": "IS_EQUAL_TO",
+                  "includeObjectsWithNoValueSet": false,
+                  "value": "primary_interest",
+                  "operationType": "STRING"
+                },
+                "filterType": "PROPERTY"
+              },
+              {
+                "property": "hs_value",
+                "operation": {
+                  "operator": "IS_ANY_OF",
+                  "includeObjectsWithNoValueSet": false,
+                  "values": [
+                    "Cancer Research",
+                    "Clinical Disease Testing & Screening",
+                    "Clinical Oncology",
+                    "Rare and Undiagnosed Disorders (RUGD)",
+                    "Microbial genomics"
+                  ],
+                  "operationType": "ENUMERATION"
+                },
+                "filterType": "PROPERTY"
+              }
+            ],
+            "eventTypeId": "4-655002",
+            "operator": "HAS_COMPLETED",
+            "filterBranchType": "UNIFIED_EVENTS",
+            "filterBranchOperator": "AND"
+          },
+          {
+            "filterBranches": [],
+            "filters": [
+              {
+                "property": "hs_name",
+                "operation": {
+                  "operator": "IS_EQUAL_TO",
+                  "includeObjectsWithNoValueSet": false,
+                  "value": "primary_technique",
+                  "operationType": "STRING"
+                },
+                "filterType": "PROPERTY"
+              },
+              {
+                "property": "hs_value",
+                "operation": {
+                  "operator": "IS_ANY_OF",
+                  "includeObjectsWithNoValueSet": false,
+                  "values": [
+                    "Single Cell & Spatial"
+                  ],
+                  "operationType": "ENUMERATION"
+                },
+                "filterType": "PROPERTY"
+              }
+            ],
+            "eventTypeId": "4-655002",
+            "operator": "HAS_COMPLETED",
+            "filterBranchType": "UNIFIED_EVENTS",
+            "filterBranchOperator": "AND"
+          }
+        ],
+        "expiration_minutes": "864000"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "139",
+      "inputValue": {
+        "actionId": "138",
+        "dataKey": "hs_event_criteria_met",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "true",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "140"
+          }
+        }
+      ],
+      "defaultBranchName": "Event criteria not met",
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "140",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-15",
+      "fields": {
+        "flow_id": "1603777876"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "141",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-29",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "142"
+      },
+      "fields": {
+        "event_filter_branches": [
+          {
+            "filterBranches": [],
+            "filters": [
+              {
+                "property": "hs_name",
+                "operation": {
+                  "operator": "IS_EQUAL_TO",
+                  "includeObjectsWithNoValueSet": false,
+                  "value": "primary_interest",
+                  "operationType": "STRING"
+                },
+                "filterType": "PROPERTY"
+              },
+              {
+                "property": "hs_value",
+                "operation": {
+                  "operator": "IS_ANY_OF",
+                  "includeObjectsWithNoValueSet": false,
+                  "values": [
+                    "Cancer Research",
+                    "Clinical Disease Testing & Screening",
+                    "Clinical Oncology",
+                    "Rare and Undiagnosed Disorders (RUGD)",
+                    "Microbial genomics"
+                  ],
+                  "operationType": "ENUMERATION"
+                },
+                "filterType": "PROPERTY"
+              }
+            ],
+            "eventTypeId": "4-655002",
+            "operator": "HAS_COMPLETED",
+            "filterBranchType": "UNIFIED_EVENTS",
+            "filterBranchOperator": "AND"
+          },
+          {
+            "filterBranches": [],
+            "filters": [
+              {
+                "property": "hs_name",
+                "operation": {
+                  "operator": "IS_EQUAL_TO",
+                  "includeObjectsWithNoValueSet": false,
+                  "value": "primary_technique",
+                  "operationType": "STRING"
+                },
+                "filterType": "PROPERTY"
+              },
+              {
+                "property": "hs_value",
+                "operation": {
+                  "operator": "IS_ANY_OF",
+                  "includeObjectsWithNoValueSet": false,
+                  "values": [
+                    "Single Cell & Spatial"
+                  ],
+                  "operationType": "ENUMERATION"
+                },
+                "filterType": "PROPERTY"
+              }
+            ],
+            "eventTypeId": "4-655002",
+            "operator": "HAS_COMPLETED",
+            "filterBranchType": "UNIFIED_EVENTS",
+            "filterBranchOperator": "AND"
+          }
+        ],
+        "expiration_minutes": "864000"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "142",
+      "inputValue": {
+        "actionId": "141",
+        "dataKey": "hs_event_criteria_met",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "true",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "143"
+          }
+        }
+      ],
+      "defaultBranchName": "Event criteria not met",
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "143",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-15",
+      "fields": {
+        "flow_id": "1603777876"
+      },
+      "type": "SINGLE_CONNECTION"
+    }
+  ],
+  "enrollmentCriteria": {
+    "shouldReEnroll": false,
+    "listFilterBranch": {
+      "filterBranches": [
+        {
+          "filterBranches": [],
+          "filters": [
+            {
+              "property": "nurture_journey",
+              "operation": {
+                "operator": "IS_ANY_OF",
+                "includeObjectsWithNoValueSet": false,
+                "values": [
+                  "New Lead"
+                ],
+                "operationType": "ENUMERATION"
+              },
+              "filterType": "PROPERTY"
+            }
+          ],
+          "filterBranchType": "AND",
+          "filterBranchOperator": "AND"
+        }
+      ],
+      "filters": [],
+      "filterBranchType": "OR",
+      "filterBranchOperator": "OR"
+    },
+    "unEnrollObjectsNotMeetingCriteria": false,
+    "reEnrollmentTriggersFilterBranches": [],
+    "type": "LIST_BASED"
+  },
+  "timeWindows": [],
+  "blockedDates": [],
+  "customProperties": {},
+  "dataSources": [
+    {
+      "name": "fetched_object_186775092",
+      "objectTypeId": "0-1",
+      "associationTypeId": 69,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    },
+    {
+      "name": "fetched_object_288430964",
+      "objectTypeId": "0-1",
+      "associationTypeId": 209,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    }
+  ],
+  "crmObjectCreationStatus": "COMPLETE",
+  "suppressionListIds": [],
+  "canEnrollFromSalesforce": false,
+  "type": "CONTACT_FLOW",
+  "objectTypeId": "0-1"
+}

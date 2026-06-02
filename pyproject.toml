@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hscf"
-version = "0.1.1"
-description = "Reference encoder for HubSpot schema compact format"
+version = "0.2.0"
+description = "Reference encoders for HubSpot compact formats"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "License not selected"}

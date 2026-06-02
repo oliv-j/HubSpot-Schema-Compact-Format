@@ -1,22 +1,42 @@
-# Example control surface for repositories that generate HSCF files.
+# Example shared control surface for repositories that generate HubSpot compact files.
 # Copy to config/hscf.yml and edit paths.
 
 version: 1
-sidecar_threshold:
-  option_count: 25
-  bytes: 4096
 
-schemas:
-  - object_key: contacts
-    input: schemas/latest/contacts.json
-    output_dir: schema-packs/contacts
-    include_view: true
-    include_property_part: true
-    historical_glob: schemas/history/contacts/*.json
+objects:
+  sidecar_threshold:
+    option_count: 25
+    bytes: 4096
+  schemas:
+    - object_key: contacts
+      input: schemas/latest/contacts.json
+      output_dir: schema-packs/objects/contacts
+      include_view: true
+      include_property_part: true
+      historical_glob: schemas/history/contacts/*.json
 
-  - object_key: delegates
-    input: schemas/latest/delegates.json
-    output_dir: schema-packs/delegates
-    include_view: true
-    include_property_part: true
-    historical_glob: schemas/history/delegates/*.json
+    - object_key: delegates
+      input: schemas/latest/delegates.json
+      output_dir: schema-packs/objects/delegates
+      include_view: true
+      include_property_part: true
+      historical_glob: schemas/history/delegates/*.json
+
+workflows:
+  sidecar_threshold:
+    step_count: 50
+    bytes: 4096
+  workflows:
+    - workflow_key: lead_nurture
+      input: workflows/latest/lead_nurture.json
+      output_dir: schema-packs/workflows/lead_nurture
+      include_view: true
+      include_step_part: true
+      historical_glob: workflows/history/lead_nurture/*.json
+
+    - workflow_key: handoff_sequence
+      input: workflows/latest/handoff_sequence.json
+      output_dir: schema-packs/workflows/handoff_sequence
+      include_view: true
+      include_step_part: true
+      historical_glob: workflows/history/handoff_sequence/*.json

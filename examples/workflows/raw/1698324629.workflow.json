@@ -1,0 +1,259 @@
+{
+  "id": "1698324629",
+  "isEnabled": true,
+  "objectTypeId": "2-34637667",
+  "flowType": "WORKFLOW",
+  "revisionId": "28",
+  "name": "New Webinar Attendance -Tags and Q&A update [BigMarker]",
+  "description": "Enroll: New records created when a webinar attendance record with \"Attended Webinar?\" set to \"Yes\" and a campaign tag is present.\nAction: Append the Webinar Attendance 'Campaign tag' value to the associated contact record's 'Webinar attended' property. ",
+  "uuid": "New Webinar Attendance -Tags and Q&A update-1698324629",
+  "createdAt": "2025-09-25T09:07:51.036Z",
+  "updatedAt": "2025-10-23T15:16:31.586Z",
+  "startActionId": "1",
+  "nextAvailableActionId": "7",
+  "actions": [
+    {
+      "actionId": "1",
+      "secretNames": [
+        "Workflow_Custom_Code_Actions"
+      ],
+      "sourceCode": "def main(event):\n    \"\"\"\n    Build webinar_new by splitting webinar_attended on semicolons and appending campaignTag,\n    but only if it is not already present in the list.\n    \"\"\"\n\n    error = {\n        \"state\": 0,\n        \"message\": \"\"\n    }\n\n    input_fields = event.get(\"inputFields\", {}) or {}\n\n    # Preserve the original value exactly as received\n    original_wa = input_fields.get(\"webinar_attended\") or \"\"\n\n    # Split into list called 'tags', trimming whitespace and skipping empties\n    tags = []\n    if isinstance(original_wa, str) and original_wa:\n        tags = [t.strip() for t in original_wa.split(\";\") if t.strip()]\n\n    # Get campaign tag and append to the end of tags if present and not already there\n    campaign_tag = input_fields.get(\"campaignTag\")\n    if campaign_tag is not None:\n        ct = str(campaign_tag).strip()\n        if ct and ct not in tags:  # exact match check; make case-insensitive by comparing ct.lower() not in [t.lower() for t in tags]\n            tags.append(ct)\n\n    # Turn tags back into a semicolon-separated string\n    webinar_new = \";\".join(tags)\n\n    return {\n        \"outputFields\": {\n            \"web_attend_original\": original_wa,\n            \"campaign_tag\": campaign_tag,\n            \"newValue\": webinar_new,\n            \"error_state\": error.get(\"state\"),\n            \"error\": error.get(\"message\")\n        }\n    }\n",
+      "runtime": "PYTHON39",
+      "inputFields": [
+        {
+          "name": "campaignTag",
+          "value": {
+            "propertyName": "campaign",
+            "type": "OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "contact_id",
+          "value": {
+            "propertyToken": "{{ fetched_objects.fetched_object_186775092.hs_object_id }}",
+            "type": "FETCHED_OBJECT_PROPERTY"
+          }
+        },
+        {
+          "name": "webinar_attended",
+          "value": {
+            "propertyName": "webinar_attended",
+            "type": "OBJECT_PROPERTY"
+          }
+        }
+      ],
+      "outputFields": [
+        {
+          "name": "error",
+          "type": "STRING"
+        },
+        {
+          "name": "error_state",
+          "type": "STRING"
+        },
+        {
+          "name": "newValue",
+          "options": [],
+          "type": "ENUMERATION"
+        },
+        {
+          "name": "web_attend_original",
+          "type": "STRING"
+        }
+      ],
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "6"
+      },
+      "type": "CUSTOM_CODE"
+    },
+    {
+      "actionId": "2",
+      "inputValue": {
+        "actionId": "1",
+        "dataKey": "error_state",
+        "type": "FIELD_DATA"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "0",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "3"
+          }
+        }
+      ],
+      "defaultBranchName": "No Error",
+      "defaultBranch": {
+        "edgeType": "STANDARD",
+        "nextActionId": "4"
+      },
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "3",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-9",
+      "connection": {
+        "edgeType": "GOTO",
+        "nextActionId": "4"
+      },
+      "fields": {
+        "user_ids": [
+          "70494377"
+        ],
+        "delivery_method": "APP",
+        "subject": "Webinar attended workflow Error",
+        "body": "{{ action_outputs.action_output_1.error }}"
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "4",
+      "inputValue": {
+        "propertyName": "number_of_q_as",
+        "type": "OBJECT_PROPERTY"
+      },
+      "staticBranches": [
+        {
+          "branchValue": "0",
+          "connection": {
+            "edgeType": "STANDARD",
+            "nextActionId": "5"
+          }
+        }
+      ],
+      "type": "STATIC_BRANCH"
+    },
+    {
+      "actionId": "5",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-5",
+      "fields": {
+        "property_name": "engaged_in_q_a",
+        "value": {
+          "staticValue": "true",
+          "type": "STATIC_VALUE"
+        }
+      },
+      "type": "SINGLE_CONNECTION"
+    },
+    {
+      "actionId": "6",
+      "actionTypeVersion": 0,
+      "actionTypeId": "0-5",
+      "connection": {
+        "edgeType": "STANDARD",
+        "nextActionId": "2"
+      },
+      "fields": {
+        "property_name": "webinar_attended",
+        "association": {
+          "associationCategory": "USER_DEFINED",
+          "associationTypeId": 67
+        },
+        "value": {
+          "actionId": "1",
+          "dataKey": "newValue",
+          "type": "FIELD_DATA"
+        }
+      },
+      "type": "SINGLE_CONNECTION"
+    }
+  ],
+  "enrollmentCriteria": {
+    "shouldReEnroll": true,
+    "eventFilterBranches": [
+      {
+        "filterBranches": [],
+        "filters": [],
+        "eventTypeId": "4-1463224",
+        "operator": "HAS_COMPLETED",
+        "filterBranchType": "UNIFIED_EVENTS",
+        "filterBranchOperator": "AND"
+      },
+      {
+        "filterBranches": [],
+        "filters": [
+          {
+            "property": "hs_name",
+            "operation": {
+              "operator": "IS_EQUAL_TO",
+              "includeObjectsWithNoValueSet": false,
+              "value": "campaign",
+              "operationType": "STRING"
+            },
+            "filterType": "PROPERTY"
+          },
+          {
+            "property": "hs_value",
+            "operation": {
+              "operator": "IS_KNOWN",
+              "includeObjectsWithNoValueSet": false,
+              "operationType": "ALL_PROPERTY"
+            },
+            "filterType": "PROPERTY"
+          }
+        ],
+        "eventTypeId": "4-655002",
+        "operator": "HAS_COMPLETED",
+        "filterBranchType": "UNIFIED_EVENTS",
+        "filterBranchOperator": "AND"
+      },
+      {
+        "filterBranches": [],
+        "filters": [
+          {
+            "property": "hs_name",
+            "operation": {
+              "operator": "IS_EQUAL_TO",
+              "includeObjectsWithNoValueSet": false,
+              "value": "attended_webinar_",
+              "operationType": "STRING"
+            },
+            "filterType": "PROPERTY"
+          },
+          {
+            "property": "hs_value",
+            "operation": {
+              "operator": "IS_ANY_OF",
+              "includeObjectsWithNoValueSet": false,
+              "values": [
+                "Yes"
+              ],
+              "operationType": "ENUMERATION"
+            },
+            "filterType": "PROPERTY"
+          }
+        ],
+        "eventTypeId": "4-655002",
+        "operator": "HAS_COMPLETED",
+        "filterBranchType": "UNIFIED_EVENTS",
+        "filterBranchOperator": "AND"
+      }
+    ],
+    "listMembershipFilterBranches": [],
+    "type": "EVENT_BASED"
+  },
+  "timeWindows": [],
+  "blockedDates": [],
+  "customProperties": {},
+  "dataSources": [
+    {
+      "name": "fetched_object_186775092",
+      "objectTypeId": "0-1",
+      "associationTypeId": 69,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    },
+    {
+      "name": "fetched_object_288430964",
+      "objectTypeId": "0-1",
+      "associationTypeId": 209,
+      "associationCategory": "USER_DEFINED",
+      "type": "ASSOCIATION_TIMESTAMP"
+    }
+  ],
+  "crmObjectCreationStatus": "COMPLETE",
+  "type": "PLATFORM_FLOW"
+}
